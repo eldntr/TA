@@ -1,0 +1,5 @@
+wiki*
+__pycache__/
+.venv/
+logs
+checkpoint_step_1000000.t7
