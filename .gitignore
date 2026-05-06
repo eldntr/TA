@@ -10,3 +10,8 @@ wheels/
 .venv
 
 dataset_audio/
+processed_dataset/
+dataset/
+Checkpoint
+
+*.pth

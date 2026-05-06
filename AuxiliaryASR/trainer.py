@@ -73,7 +73,7 @@ class Trainer(object):
             load_only_params (bool): Whether to load only model parameters.
 
         """
-        state_dict = torch.load(checkpoint_path, map_location="cpu")
+        state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         self._load(state_dict["model"], self.model)
 
         if not load_only_params:
