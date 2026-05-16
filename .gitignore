@@ -13,5 +13,17 @@ dataset_audio/
 processed_dataset/
 dataset/
 Checkpoint
+dataset_sidon
 
 *.pth
+
+Sidon
+
+tensorboard
+
+debug_1h
+debug_10m
+
+Models
+
+dataset_*/

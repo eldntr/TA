@@ -47,6 +47,7 @@ def main(config_path):
     save_freq = config.get('save_freq', 20)
     train_path = config.get('train_data', None)
     val_path = config.get('val_data', None)
+    start_epoch = int(config.get('resume_epoch', 1))
 
     train_list, val_list = get_data_path_list(train_path, val_path)
     train_dataloader = build_dataloader(train_list,
@@ -93,8 +94,11 @@ def main(config_path):
     if config.get('pretrained_model', '') != '':
         trainer.load_checkpoint(config['pretrained_model'],
                                 load_only_params=config.get('load_only_params', True))
+        if not config.get('load_only_params', True):
+            start_epoch = max(start_epoch, trainer.epochs + 1)
 
-    for epoch in range(1, epochs+1):
+    for epoch in range(start_epoch, epochs+1):
+        trainer.epochs = epoch
         train_results = trainer._train_epoch()
         eval_results = trainer._eval_epoch()
         results = train_results.copy()

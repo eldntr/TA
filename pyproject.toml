@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "click>=8.3.3",
+    "ipython>=9.13.0",
     "jiwer>=4.0.0",
     "lingua-language-detector>=2.2.0",
     "numpy>=2.4.4",
