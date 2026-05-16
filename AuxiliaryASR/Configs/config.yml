@@ -3,18 +3,15 @@ save_freq: 10
 device: "cuda"
 epochs: 200
 batch_size: 8
-pretrained_model: "epoch_00080.pth"
-train_data: "../dataset/train_list.txt"
-val_data: "../dataset/val_list.txt"
+pretrained_model: "Checkpoint/epoch_00050.pth"
+load_only_params: false
+resume_epoch: 51
+train_data: "../dataset_sidon/train_list.txt"
+val_data: "../dataset_sidon/val_list.txt"
 
-preprocess_parasm:
+dataset_params:
   sr: 16000
-  spect_params:
-    n_fft: 2048
-    win_length: 1200
-    hop_length: 300
-  mel_params:
-    n_mels: 80
+  data_root: "../dataset_sidon/wavs"
 
 model_params:
    input_dim: 80

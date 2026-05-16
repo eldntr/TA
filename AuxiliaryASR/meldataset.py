@@ -37,7 +37,8 @@ MEL_PARAMS = {
 class MelDataset(torch.utils.data.Dataset):
     def __init__(self,
                  data_list,
-                 sr=24000
+                 sr=24000,
+                 data_root="../dataset/wavs"
                 ):
 
         spect_params = SPECT_PARAMS
@@ -47,6 +48,7 @@ class MelDataset(torch.utils.data.Dataset):
         self.data_list = [data if len(data) == 3 else (*data, 0) for data in _data_list]
         self.text_cleaner = TextCleaner()
         self.sr = sr
+        self.data_root = data_root
 
         self.to_melspec = torchaudio.transforms.MelSpectrogram(**MEL_PARAMS)
         self.mean, self.std = -4, 4
@@ -77,7 +79,7 @@ class MelDataset(torch.utils.data.Dataset):
     def _load_tensor(self, data):
         wave_path, text, speaker_id = data
         if not wave_path.startswith("../") and not wave_path.startswith("/"):
-            wave_path = os.path.join("../dataset/wavs", wave_path)
+            wave_path = os.path.join(self.data_root, wave_path)
         speaker_id = int(speaker_id)
         wave, sr = sf.read(wave_path)
 
