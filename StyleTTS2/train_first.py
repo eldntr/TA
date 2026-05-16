@@ -267,7 +267,7 @@ def main(config_path):
 
             # generator loss
             optimizer.zero_grad()
-            loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
+            loss_mel = stft_loss(y_rec.squeeze(1), wav.detach())
             
             if epoch >= TMA_epoch: # start TMA training
                 loss_s2s = 0
@@ -296,6 +296,10 @@ def main(config_path):
             running_loss += accelerator.gather(loss_mel).mean().item()
 
             accelerator.backward(g_loss)
+            
+            if torch.isnan(g_loss):
+                from IPython.core.debugger import set_trace
+                set_trace()
             
             optimizer.step('text_encoder')
             optimizer.step('style_encoder')
@@ -380,7 +384,7 @@ def main(config_path):
                 real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
                 y_rec = model.decoder(en, F0_real, real_norm, s)
 
-                loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
+                loss_mel = stft_loss(y_rec.squeeze(1), wav.detach())
 
                 loss_test += accelerator.gather(loss_mel).mean().item()
                 iters_test += 1
@@ -400,7 +404,6 @@ def main(config_path):
                     en = asr[bib, :, :mel_length // 2].unsqueeze(0)
                                         
                     F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
-                    F0_real = F0_real.unsqueeze(0)
                     s = model.style_encoder(gt.unsqueeze(1))
                     real_norm = log_norm(gt.unsqueeze(1)).squeeze(1)
                     
