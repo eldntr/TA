@@ -72,6 +72,7 @@ def main(config_path):
     root_path = data_params['root_path']
     min_length = data_params['min_length']
     OOD_data = data_params['OOD_data']
+    dataset_config = data_params.get('dataset_config', {})
     
     max_len = config.get('max_len', 200)
     
@@ -84,7 +85,7 @@ def main(config_path):
                                         min_length=min_length,
                                         batch_size=batch_size,
                                         num_workers=2,
-                                        dataset_config={},
+                                        dataset_config=dataset_config,
                                         device=device)
 
     val_dataloader = build_dataloader(val_list,
@@ -95,7 +96,7 @@ def main(config_path):
                                       validation=True,
                                       num_workers=0,
                                       device=device,
-                                      dataset_config={})
+                                      dataset_config=dataset_config)
     
     with accelerator.main_process_first():
         # load pretrained ASR model
@@ -121,6 +122,8 @@ def main(config_path):
     
     model_params = recursive_munch(config['model_params'])
     multispeaker = model_params.multispeaker
+    phoible_feature_table = load_lpep_feature_table(model_params)
+    use_lpep = getattr(model_params, "use_lpep", False)
     model = build_model(model_params, text_aligner, pitch_extractor, plbert)
 
     best_loss = float('inf')  # best test loss
@@ -130,18 +133,19 @@ def main(config_path):
     loss_params = Munch(config['loss_params'])
     TMA_epoch = loss_params.TMA_epoch
     
-    for k in model:
-        model[k] = accelerator.prepare(model[k])
+    for key, module in model_module_items(model):
+        model[key] = accelerator.prepare(module)
     
     train_dataloader, val_dataloader = accelerator.prepare(
         train_dataloader, val_dataloader
     )
     
-    _ = [model[key].to(device) for key in model]
+    move_model_to_device(model, device)
 
     # initialize optimizers after preparing models for compatibility with FSDP
-    optimizer = build_optimizer({key: model[key].parameters() for key in model},
-                                  scheduler_params_dict= {key: scheduler_params.copy() for key in model},
+    model_keys = [key for key, _ in model_module_items(model)]
+    optimizer = build_optimizer({key: model[key].parameters() for key in model_keys},
+                                  scheduler_params_dict= {key: scheduler_params.copy() for key in model_keys},
                                lr=float(config['optimizer_params'].get('lr', 1e-4)))
     
     for k, v in optimizer.optimizers.items():
@@ -175,12 +179,12 @@ def main(config_path):
         running_loss = 0
         start_time = time.time()
 
-        _ = [model[key].train() for key in model]
+        set_model_mode(model, train=True)
 
         for i, batch in enumerate(train_dataloader):
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
-            texts, input_lengths, _, _, mels, mel_input_length, _ = batch
+            texts, input_lengths, _, _, mels, mel_input_length, _, lang_ids = batch
             
             with torch.no_grad():
                 mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
@@ -204,7 +208,22 @@ def main(config_path):
                 s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
 
             # encode
-            t_en = model.text_encoder(texts, input_lengths, text_mask)
+            if use_lpep:
+                lang_id, phon_feats = build_lpep_inputs(
+                    texts,
+                    model_params,
+                    phoible_feature_table=phoible_feature_table,
+                    lang_id=lang_ids,
+                )
+                t_en = model.text_encoder(
+                    texts,
+                    input_lengths,
+                    text_mask,
+                    lang_id=lang_id,
+                    phon_feats=phon_feats,
+                )
+            else:
+                t_en = model.text_encoder(texts, input_lengths, text_mask)
 
             # 50% of chance of using monotonic version
             if bool(random.getrandbits(1)):
@@ -324,7 +343,7 @@ def main(config_path):
                                 
         loss_test = 0
 
-        _ = [model[key].eval() for key in model]
+        set_model_mode(model, train=False)
 
         with torch.no_grad():
             iters_test = 0
@@ -333,7 +352,7 @@ def main(config_path):
 
                 waves = batch[0]
                 batch = [b.to(device) for b in batch[1:]]
-                texts, input_lengths, _, _, mels, mel_input_length, _ = batch
+                texts, input_lengths, _, _, mels, mel_input_length, _, lang_ids = batch
 
                 with torch.no_grad():
                     mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
@@ -350,7 +369,22 @@ def main(config_path):
                     s2s_attn.masked_fill_(attn_mask, 0.0)
 
                 # encode
-                t_en = model.text_encoder(texts, input_lengths, text_mask)
+                if use_lpep:
+                    lang_id, phon_feats = build_lpep_inputs(
+                        texts,
+                        model_params,
+                        phoible_feature_table=phoible_feature_table,
+                        lang_id=lang_ids,
+                    )
+                    t_en = model.text_encoder(
+                        texts,
+                        input_lengths,
+                        text_mask,
+                        lang_id=lang_id,
+                        phon_feats=phon_feats,
+                    )
+                else:
+                    t_en = model.text_encoder(texts, input_lengths, text_mask)
                 
                 asr = (t_en @ s2s_attn)
 
@@ -418,7 +452,7 @@ def main(config_path):
                     best_loss = loss_test / iters_test
                 print('Saving..')
                 state = {
-                    'net':  {key: model[key].state_dict() for key in model}, 
+                    'net': model_state_dict(model),
                     'optimizer': optimizer.state_dict(),
                     'iters': iters,
                     'val_loss': loss_test / iters_test,
@@ -430,7 +464,7 @@ def main(config_path):
     if accelerator.is_main_process:
         print('Saving..')
         state = {
-            'net':  {key: model[key].state_dict() for key in model}, 
+            'net': model_state_dict(model),
             'optimizer': optimizer.state_dict(),
             'iters': iters,
             'val_loss': loss_test / iters_test,

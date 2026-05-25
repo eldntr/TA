@@ -280,11 +280,109 @@ class LayerNorm(nn.Module):
         x = x.transpose(1, -1)
         x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
         return x.transpose(1, -1)
+
+class LPEP(nn.Module):
+    def __init__(
+        self,
+        n_symbols,
+        hidden_dim,
+        n_langs=2,
+        phon_feat_dim=37,
+        lang_emb_dim=16,
+        dropout=0.1,
+        use_phoible_features=True,
+    ):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.phon_feat_dim = phon_feat_dim
+        self.use_phoible_features = use_phoible_features
+
+        self.phone_emb = nn.Embedding(n_symbols, hidden_dim)
+        self.lang_emb = nn.Embedding(n_langs, lang_emb_dim)
+
+        in_dim = hidden_dim + lang_emb_dim
+        if self.use_phoible_features:
+            in_dim += phon_feat_dim
+
+        self.proj = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.Sigmoid(),
+        )
+        self.out_norm = nn.LayerNorm(hidden_dim)
+
+    def _normalize_lang_id(self, tokens, lang_id):
+        batch_size = tokens.size(0)
+        device = tokens.device
+        if lang_id is None:
+            return torch.zeros(batch_size, dtype=torch.long, device=device)
+        if not torch.is_tensor(lang_id):
+            lang_id = torch.tensor(lang_id, dtype=torch.long, device=device)
+        else:
+            lang_id = lang_id.to(device=device, dtype=torch.long)
+        if lang_id.dim() == 0:
+            lang_id = lang_id.expand(batch_size)
+        return lang_id.view(batch_size)
+
+    def forward(self, tokens, lang_id=None, phon_feats=None):
+        phone = self.phone_emb(tokens)
+        lang_id = self._normalize_lang_id(tokens, lang_id)
+        lang = self.lang_emb(lang_id).unsqueeze(1).expand(-1, tokens.size(1), -1)
+
+        pieces = [phone, lang]
+        if self.use_phoible_features:
+            if phon_feats is None:
+                phon_feats = torch.zeros(
+                    tokens.size(0),
+                    tokens.size(1),
+                    self.phon_feat_dim,
+                    device=tokens.device,
+                    dtype=phone.dtype,
+                )
+            else:
+                phon_feats = phon_feats.to(device=tokens.device, dtype=phone.dtype)
+            pieces.append(phon_feats)
+
+        z = torch.cat(pieces, dim=-1)
+        delta = self.proj(z)
+        gate = self.gate(z)
+        return self.out_norm(phone + gate * delta)
     
 class TextEncoder(nn.Module):
-    def __init__(self, channels, kernel_size, depth, n_symbols, actv=nn.LeakyReLU(0.2)):
+    def __init__(
+        self,
+        channels,
+        kernel_size,
+        depth,
+        n_symbols,
+        actv=nn.LeakyReLU(0.2),
+        use_lpep=False,
+        n_langs=2,
+        phon_feat_dim=37,
+        lang_emb_dim=16,
+        use_phoible_features=True,
+        lpep_dropout=0.1,
+    ):
         super().__init__()
-        self.embedding = nn.Embedding(n_symbols, channels)
+        self.use_lpep = use_lpep
+        if self.use_lpep:
+            self.embedding = LPEP(
+                n_symbols=n_symbols,
+                hidden_dim=channels,
+                n_langs=n_langs,
+                phon_feat_dim=phon_feat_dim,
+                lang_emb_dim=lang_emb_dim,
+                dropout=lpep_dropout,
+                use_phoible_features=use_phoible_features,
+            )
+        else:
+            self.embedding = nn.Embedding(n_symbols, channels)
 
         padding = (kernel_size - 1) // 2
         self.cnn = nn.ModuleList()
@@ -299,8 +397,11 @@ class TextEncoder(nn.Module):
 
         self.lstm = nn.LSTM(channels, channels//2, 1, batch_first=True, bidirectional=True)
 
-    def forward(self, x, input_lengths, m):
-        x = self.embedding(x)  # [B, T, emb]
+    def forward(self, x, input_lengths, m, lang_id=None, phon_feats=None):
+        if self.use_lpep:
+            x = self.embedding(x, lang_id=lang_id, phon_feats=phon_feats)
+        else:
+            x = self.embedding(x)
         x = x.transpose(1, 2)  # [B, emb, T]
         m = m.to(input_lengths.device).unsqueeze(1)
         x.masked_fill_(m, 0.0)
@@ -321,19 +422,27 @@ class TextEncoder(nn.Module):
             x, batch_first=True)
                 
         x = x.transpose(-1, -2)
-        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
+        x_pad = torch.zeros(
+            [x.shape[0], x.shape[1], m.shape[-1]],
+            device=x.device,
+            dtype=x.dtype,
+        )
 
         x_pad[:, :, :x.shape[-1]] = x
-        x = x_pad.to(x.device)
+        x = x_pad
         
         x.masked_fill_(m, 0.0)
         
         return x
 
-    def inference(self, x):
-        x = self.embedding(x)
+    def inference(self, x, lang_id=None, phon_feats=None):
+        if self.use_lpep:
+            x = self.embedding(x, lang_id=lang_id, phon_feats=phon_feats)
+        else:
+            x = self.embedding(x)
         x = x.transpose(1, 2)
-        x = self.cnn(x)
+        for c in self.cnn:
+            x = c(x)
         x = x.transpose(1, 2)
         self.lstm.flatten_parameters()
         x, _ = self.lstm(x)
@@ -344,6 +453,64 @@ class TextEncoder(nn.Module):
         mask = torch.gt(mask+1, lengths.unsqueeze(1))
         return mask
 
+
+class PPIM(nn.Module):
+    """
+    Phoneme Prosody Interaction Module.
+
+    Input:
+        text_hidden : [B, H, T]
+        style       : [B, style_dim]
+        mask        : [B, T], True for padding
+
+    Output:
+        prosody-aware hidden states: [B, H, T]
+    """
+
+    def __init__(self, hidden_dim, style_dim, n_heads=4, dropout=0.1):
+        super().__init__()
+        self.style_proj = nn.Linear(style_dim, hidden_dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid(),
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+
+    def forward(self, text_hidden, style, mask=None):
+        h = text_hidden.transpose(1, 2)
+        time_steps = h.size(1)
+
+        style_token = self.style_proj(style).unsqueeze(1).expand(-1, time_steps, -1)
+        attn_out, _ = self.attn(
+            query=h,
+            key=style_token,
+            value=style_token,
+            key_padding_mask=mask if mask is not None else None,
+            need_weights=False,
+        )
+
+        gate = self.gate(torch.cat([h, attn_out], dim=-1))
+        h = self.norm1(h + self.dropout(gate * attn_out))
+        h = self.norm2(h + self.dropout(self.ffn(h)))
+
+        if mask is not None:
+            h = h.masked_fill(mask.unsqueeze(-1), 0.0)
+
+        return h.transpose(1, 2)
 
 
 class AdaIN1d(nn.Module):
@@ -632,7 +799,30 @@ def build_model(args, text_aligner, pitch_extractor, bert):
                 resblock_dilation_sizes=args.decoder.resblock_dilation_sizes,
                 upsample_kernel_sizes=args.decoder.upsample_kernel_sizes) 
         
-    text_encoder = TextEncoder(channels=args.hidden_dim, kernel_size=5, depth=args.n_layer, n_symbols=args.n_token)
+    text_encoder = TextEncoder(
+        channels=args.hidden_dim,
+        kernel_size=5,
+        depth=args.n_layer,
+        n_symbols=args.n_token,
+        use_lpep=getattr(args, "use_lpep", False),
+        n_langs=getattr(args, "n_langs", 2),
+        phon_feat_dim=getattr(args, "phon_feat_dim", 37),
+        lang_emb_dim=getattr(args, "lang_emb_dim", 16),
+        use_phoible_features=getattr(args, "use_phoible_features", True),
+        lpep_dropout=getattr(args, "lpep_dropout", 0.1),
+    )
+
+    use_ppim = getattr(args, "use_ppim", False)
+    print(f"Use PPIM: {use_ppim}")
+    if use_ppim:
+        ppim = PPIM(
+            hidden_dim=args.hidden_dim,
+            style_dim=args.style_dim,
+            n_heads=getattr(args, "ppim_heads", 4),
+            dropout=args.dropout,
+        )
+    else:
+        ppim = None
     
     predictor = ProsodyPredictor(style_dim=args.style_dim, d_hid=args.hidden_dim, nlayers=args.n_layer, max_dur=args.max_dur, dropout=args.dropout)
     
@@ -676,6 +866,7 @@ def build_model(args, text_aligner, pitch_extractor, bert):
             predictor=predictor,
             decoder=decoder,
             text_encoder=text_encoder,
+            ppim=ppim,
 
             predictor_encoder=predictor_encoder,
             style_encoder=style_encoder,
@@ -696,11 +887,11 @@ def build_model(args, text_aligner, pitch_extractor, bert):
 def load_checkpoint(model, optimizer, path, load_only_params=True, ignore_modules=[]):
     state = torch.load(path, map_location='cpu')
     params = state['net']
-    for key in model:
+    for key, module in model_module_items(model):
         if key in params and key not in ignore_modules:
             print('%s loaded' % key)
-            model[key].load_state_dict(params[key], strict=False)
-    _ = [model[key].eval() for key in model]
+            module.load_state_dict(params[key], strict=False)
+    set_model_mode(model, train=False)
     
     if not load_only_params:
         epoch = state["epoch"]
@@ -711,3 +902,74 @@ def load_checkpoint(model, optimizer, path, load_only_params=True, ignore_module
         iters = 0
         
     return model, optimizer, epoch, iters
+
+def freeze_all(nets):
+    for _, module in model_module_items(nets):
+        for param in module.parameters():
+            param.requires_grad = False
+
+def unfreeze_lpep(nets):
+    text_encoder = getattr(nets, "text_encoder", None)
+    if text_encoder is None:
+        return
+    text_encoder_module = getattr(text_encoder, "module", text_encoder)
+    if hasattr(text_encoder_module, "embedding"):
+        for param in text_encoder_module.embedding.parameters():
+            param.requires_grad = True
+
+def unfreeze_ppim(nets):
+    ppim = getattr(nets, "ppim", None)
+    if ppim is None:
+        return
+    ppim = getattr(ppim, "module", ppim)
+    for param in ppim.parameters():
+        param.requires_grad = True
+
+def unfreeze_modules_by_name(nets, module_names):
+    for module_name in module_names:
+        target = nets
+        for part in module_name.split("."):
+            if isinstance(target, dict):
+                target = target.get(part)
+            else:
+                target = getattr(target, part, None)
+            if target is None:
+                break
+            target = getattr(target, "module", target)
+        if isinstance(target, nn.Module):
+            for param in target.parameters():
+                param.requires_grad = True
+
+def print_trainable_params(nets):
+    for name, module in model_module_items(nets):
+        total = 0
+        trainable = 0
+        for param in module.parameters():
+            count = param.numel()
+            total += count
+            if param.requires_grad:
+                trainable += count
+        print(f"{name}: trainable={trainable} total={total}")
+
+def maybe_apply_ppim(nets, text_hidden, style, mask=None):
+    ppim = getattr(nets, "ppim", None)
+    if ppim is None:
+        return text_hidden
+    return ppim(text_hidden=text_hidden, style=style, mask=mask)
+
+def model_module_items(model):
+    return [(key, module) for key, module in model.items() if isinstance(module, nn.Module)]
+
+def move_model_to_device(model, device):
+    for _, module in model_module_items(model):
+        module.to(device)
+
+def set_model_mode(model, train=True):
+    for _, module in model_module_items(model):
+        if train:
+            module.train()
+        else:
+            module.eval()
+
+def model_state_dict(model):
+    return {key: module.state_dict() for key, module in model_module_items(model)}

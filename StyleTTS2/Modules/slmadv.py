@@ -2,9 +2,24 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 
+from utils import build_lpep_inputs
+from models import maybe_apply_ppim
+
 class SLMAdversarialLoss(torch.nn.Module):
 
-    def __init__(self, model, wl, sampler, min_len, max_len, batch_percentage=0.5, skip_update=10, sig=1.5):
+    def __init__(
+        self,
+        model,
+        wl,
+        sampler,
+        min_len,
+        max_len,
+        batch_percentage=0.5,
+        skip_update=10,
+        sig=1.5,
+        lpep_args=None,
+        phoible_feature_table=None,
+    ):
         super(SLMAdversarialLoss, self).__init__()
         self.model = model
         self.wl = wl
@@ -16,8 +31,10 @@ class SLMAdversarialLoss(torch.nn.Module):
         
         self.sig = sig
         self.skip_update = skip_update
+        self.lpep_args = lpep_args
+        self.phoible_feature_table = phoible_feature_table
         
-    def forward(self, iters, y_rec_gt, y_rec_gt_pred, waves, mel_input_length, ref_text, ref_lengths, use_ind, s_trg, ref_s=None):
+    def forward(self, iters, y_rec_gt, y_rec_gt_pred, waves, mel_input_length, ref_text, ref_lengths, use_ind, s_trg, ref_s=None, ref_lang_id=None):
         text_mask = length_to_mask(ref_lengths).to(ref_text.device)
         bert_dur = self.model.bert(ref_text, attention_mask=(~text_mask).int())
         d_en = self.model.bert_encoder(bert_dur).transpose(-1, -2) 
@@ -42,6 +59,8 @@ class SLMAdversarialLoss(torch.nn.Module):
             
         s_dur = s_preds[:, 128:]
         s = s_preds[:, :128]
+        if getattr(getattr(self.model, "module", self.model), "ppim", None) is not None:
+            d_en = maybe_apply_ppim(self.model, d_en, s_dur, text_mask)
         
         d, _ = self.model.predictor(d_en, s_dur, 
                                                 ref_lengths, 
@@ -79,7 +98,26 @@ class SLMAdversarialLoss(torch.nn.Module):
         max_len = max(output_lengths)
         
         with torch.no_grad():
-            t_en = self.model.text_encoder(ref_text, ref_lengths, text_mask)
+            if self.lpep_args is not None and getattr(self.lpep_args, "use_lpep", False):
+                lang_id, phon_feats = build_lpep_inputs(
+                    ref_text,
+                    self.lpep_args,
+                    phoible_feature_table=self.phoible_feature_table,
+                    lang_id=ref_lang_id,
+                )
+                t_en = self.model.text_encoder(
+                    ref_text,
+                    ref_lengths,
+                    text_mask,
+                    lang_id=lang_id,
+                    phon_feats=phon_feats,
+                )
+            else:
+                t_en = self.model.text_encoder(
+                    ref_text,
+                    ref_lengths,
+                    text_mask,
+                )
             
         s2s_attn = torch.zeros(len(ref_lengths), int(ref_lengths.max()), max_len).to(ref_text.device)
         for bib in range(len(output_lengths)):

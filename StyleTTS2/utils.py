@@ -71,4 +71,59 @@ def recursive_munch(d):
 def log_print(message, logger):
     logger.info(message)
     print(message)
+
+def load_lpep_feature_table(args):
+    use_lpep = getattr(args, "use_lpep", False)
+    use_phoible_features = getattr(args, "use_phoible_features", False)
+    if not (use_lpep and use_phoible_features):
+        return None
+
+    table_path = getattr(args, "phoible_feature_table_path", None)
+    if not table_path:
+        raise ValueError("use_phoible_features=True but phoible_feature_table_path is not provided")
+
+    obj = torch.load(table_path, map_location="cpu")
+    if isinstance(obj, dict):
+        feature_table = obj.get("feature_table")
+    else:
+        feature_table = obj
+    if feature_table is None:
+        raise KeyError(f"feature_table not found in {table_path}")
+    feature_table = feature_table.float()
+
+    expected_tokens = getattr(args, "n_token", None)
+    if expected_tokens is not None and feature_table.size(0) != expected_tokens:
+        raise ValueError(
+            f"PHOIBLE feature table token count mismatch: expected {expected_tokens}, got {feature_table.size(0)}"
+        )
+
+    expected_feat_dim = getattr(args, "phon_feat_dim", None)
+    if expected_feat_dim is not None and feature_table.size(1) != expected_feat_dim:
+        raise ValueError(
+            f"PHOIBLE feature table feature dim mismatch: expected {expected_feat_dim}, got {feature_table.size(1)}"
+        )
+
+    return feature_table
+
+def build_lpep_inputs(tokens, args, phoible_feature_table=None, lang_id=None):
+    batch_size = tokens.size(0)
+    device = tokens.device
+
+    if lang_id is None:
+        lang_id = torch.zeros(batch_size, dtype=torch.long, device=device)
+    elif not torch.is_tensor(lang_id):
+        lang_id = torch.tensor(lang_id, dtype=torch.long, device=device)
+    else:
+        lang_id = lang_id.to(device=device, dtype=torch.long)
+    if lang_id.dim() == 0:
+        lang_id = lang_id.expand(batch_size)
+    lang_id = lang_id.view(batch_size)
+
+    phon_feats = None
+    if getattr(args, "use_lpep", False) and getattr(args, "use_phoible_features", False):
+        if phoible_feature_table is None:
+            raise ValueError("use_phoible_features=True but PHOIBLE feature table is not loaded")
+        phon_feats = phoible_feature_table.to(device=device)[tokens]
+
+    return lang_id, phon_feats
     

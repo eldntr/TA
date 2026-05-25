@@ -48,6 +48,114 @@ handler.setLevel(logging.DEBUG)
 logger.addHandler(handler)
 
 
+def summarize_tensor(name, value):
+    if not torch.is_tensor(value):
+        return {"name": name, "type": type(value).__name__, "value": value}
+
+    data = value.detach()
+    finite_mask = torch.isfinite(data)
+    finite_count = int(finite_mask.sum().item())
+    total_count = data.numel()
+    summary = {
+        "name": name,
+        "shape": list(data.shape),
+        "dtype": str(data.dtype),
+        "device": str(data.device),
+        "finite": bool(torch.isfinite(data).all().item()),
+        "finite_count": finite_count,
+        "total_count": total_count,
+    }
+
+    if finite_count > 0:
+        finite_vals = data[finite_mask]
+        stats_vals = finite_vals.float() if not torch.is_floating_point(finite_vals) else finite_vals
+        summary.update(
+            {
+                "min": float(finite_vals.min().item()),
+                "max": float(finite_vals.max().item()),
+                "mean": float(stats_vals.mean().item()),
+                "std": float(stats_vals.std().item()) if stats_vals.numel() > 1 else 0.0,
+            }
+        )
+    else:
+        summary.update({"min": None, "max": None, "mean": None, "std": None})
+
+    return summary
+
+
+def summarize_module_state(name, module, attr):
+    total_count = 0
+    finite_count = 0
+    max_abs = 0.0
+    has_values = False
+
+    for param in module.parameters():
+        tensor = getattr(param, attr, None) if attr == "grad" else param.data
+        if tensor is None:
+            continue
+        tensor = tensor.detach()
+        total_count += tensor.numel()
+        finite_mask = torch.isfinite(tensor)
+        finite_count += int(finite_mask.sum().item())
+        if finite_mask.any():
+            has_values = True
+            max_abs = max(max_abs, float(tensor[finite_mask].abs().max().item()))
+
+    return {
+        "name": name,
+        "attr": attr,
+        "finite": finite_count == total_count,
+        "finite_count": finite_count,
+        "total_count": total_count,
+        "max_abs": max_abs if has_values else None,
+    }
+
+
+def save_debug_dump(log_dir, epoch, step, stage, summaries, raw_tensors=None):
+    dump_path = osp.join(log_dir, f"nonfinite_debug_e{epoch + 1:04d}_s{step + 1:05d}.pt")
+    payload = {
+        "epoch": epoch + 1,
+        "step": step + 1,
+        "stage": stage,
+        "summaries": summaries,
+        "raw_tensors": {},
+    }
+    if raw_tensors:
+        for key, value in raw_tensors.items():
+            if torch.is_tensor(value):
+                payload["raw_tensors"][key] = value.detach().cpu()
+            else:
+                payload["raw_tensors"][key] = value
+    torch.save(payload, dump_path)
+    logger.error("Saved non-finite debug dump to %s", dump_path)
+
+
+def ensure_finite(name, value, summaries):
+    summary = summarize_tensor(name, value)
+    summaries[name] = summary
+    if torch.is_tensor(value) and not summary["finite"]:
+        raise FloatingPointError(f"Non-finite tensor at {name}")
+    return value
+
+
+def ensure_module_finite(name, module, attr, summaries):
+    summary = summarize_module_state(name, module, attr)
+    summaries[f"{name}_{attr}"] = summary
+    if summary["total_count"] > 0 and not summary["finite"]:
+        raise FloatingPointError(f"Non-finite module {attr} at {name}")
+    return summary
+
+
+def copy_matching_module_weights(dst_module, src_module):
+    dst = getattr(dst_module, "module", dst_module)
+    src = getattr(src_module, "module", src_module)
+    dst.load_state_dict(src.state_dict(), strict=False)
+
+
+def unwrap_module(module):
+    return getattr(module, "module", module)
+
+
 @click.command()
 @click.option('-p', '--config_path', default='Configs/config.yml', type=str)
 def main(config_path):
@@ -66,11 +174,14 @@ def main(config_path):
 
     
     batch_size = config.get('batch_size', 10)
+    use_data_parallel = config.get('use_data_parallel', torch.cuda.device_count() > 1)
 
     epochs = config.get('epochs_2nd', 200)
     save_freq = config.get('save_freq', 2)
     log_interval = config.get('log_interval', 10)
     saving_epoch = config.get('save_freq', 2)
+    diagnose_non_finite = config.get('diagnose_non_finite', False)
+    fail_fast_on_non_finite = config.get('fail_fast_on_non_finite', diagnose_non_finite)
 
     data_params = config.get('data_params', None)
     sr = config['preprocess_params'].get('sr', 24000)
@@ -79,6 +190,7 @@ def main(config_path):
     root_path = data_params['root_path']
     min_length = data_params['min_length']
     OOD_data = data_params['OOD_data']
+    dataset_config = data_params.get('dataset_config', {})
 
     max_len = config.get('max_len', 200)
     
@@ -97,7 +209,7 @@ def main(config_path):
                                         min_length=min_length,
                                         batch_size=batch_size,
                                         num_workers=2,
-                                        dataset_config={},
+                                        dataset_config=dataset_config,
                                         device=device)
 
     val_dataloader = build_dataloader(val_list,
@@ -108,7 +220,7 @@ def main(config_path):
                                       validation=True,
                                       num_workers=0,
                                       device=device,
-                                      dataset_config={})
+                                      dataset_config=dataset_config)
     
     # load pretrained ASR model
     ASR_config = config.get('ASR_config', False)
@@ -126,13 +238,17 @@ def main(config_path):
     # build model
     model_params = recursive_munch(config['model_params'])
     multispeaker = model_params.multispeaker
+    phoible_feature_table = load_lpep_feature_table(model_params)
+    use_lpep = getattr(model_params, "use_lpep", False)
     model = build_model(model_params, text_aligner, pitch_extractor, plbert)
-    _ = [model[key].to(device) for key in model]
+    move_model_to_device(model, device)
     
-    # DP
-    for key in model:
-        if key != "mpd" and key != "msd" and key != "wd":
-            model[key] = MyDataParallel(model[key])
+    # DataParallel is unstable here on some single-GPU setups, especially with spectral_norm modules.
+    if use_data_parallel:
+        for key in model:
+            if key != "mpd" and key != "msd" and key != "wd" and isinstance(model[key], nn.Module):
+                model[key] = MyDataParallel(model[key])
+    logger.info("use_data_parallel=%s", use_data_parallel)
             
     start_epoch = 0
     iters = 0
@@ -154,7 +270,7 @@ def main(config_path):
             joint_epoch += start_epoch
             epochs += start_epoch
             
-            model.predictor_encoder = copy.deepcopy(model.style_encoder)
+            copy_matching_module_weights(model.predictor_encoder, model.style_encoder)
         else:
             raise ValueError('You need to specify the path to the first stage model.') 
 
@@ -165,9 +281,10 @@ def main(config_path):
                    sr, 
                    model_params.slm.sr).to(device)
 
-    gl = MyDataParallel(gl)
-    dl = MyDataParallel(dl)
-    wl = MyDataParallel(wl)
+    if use_data_parallel:
+        gl = MyDataParallel(gl)
+        dl = MyDataParallel(dl)
+        wl = MyDataParallel(wl)
     
     sampler = DiffusionSampler(
         model.diffusion.diffusion,
@@ -182,12 +299,13 @@ def main(config_path):
         "epochs": epochs,
         "steps_per_epoch": len(train_dataloader),
     }
-    scheduler_params_dict= {key: scheduler_params.copy() for key in model}
+    model_keys = [key for key, _ in model_module_items(model)]
+    scheduler_params_dict= {key: scheduler_params.copy() for key in model_keys}
     scheduler_params_dict['bert']['max_lr'] = optimizer_params.bert_lr * 2
     scheduler_params_dict['decoder']['max_lr'] = optimizer_params.ft_lr * 2
     scheduler_params_dict['style_encoder']['max_lr'] = optimizer_params.ft_lr * 2
     
-    optimizer = build_optimizer({key: model[key].parameters() for key in model},
+    optimizer = build_optimizer({key: model[key].parameters() for key in model_keys},
                                           scheduler_params_dict=scheduler_params_dict, lr=optimizer_params.lr)
     
     # adjust BERT learning rate
@@ -237,7 +355,9 @@ def main(config_path):
                                 slmadv_params.max_len,
                                 batch_percentage=slmadv_params.batch_percentage,
                                 skip_update=slmadv_params.iter, 
-                                sig=slmadv_params.sig
+                                sig=slmadv_params.sig,
+                                lpep_args=model_params,
+                                phoible_feature_table=phoible_feature_table,
                                )
 
 
@@ -245,13 +365,15 @@ def main(config_path):
         running_loss = 0
         start_time = time.time()
 
-        _ = [model[key].eval() for key in model]
+        set_model_mode(model, train=False)
 
         model.predictor.train()
         model.bert_encoder.train()
         model.bert.train()
         model.msd.train()
         model.mpd.train()
+        if getattr(model, "ppim", None) is not None:
+            model.ppim.train()
 
 
         if epoch >= diff_epoch:
@@ -260,7 +382,9 @@ def main(config_path):
         for i, batch in enumerate(train_dataloader):
             waves = batch[0]
             batch = [b.to(device) for b in batch[1:]]
-            texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+            texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, lang_ids = batch
+            debug_summaries = {}
+            debug_raw_tensors = {}
 
             with torch.no_grad():
                 mask = length_to_mask(mel_input_length // (2 ** n_down)).to(device)
@@ -279,7 +403,22 @@ def main(config_path):
                 s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
 
                 # encode
-                t_en = model.text_encoder(texts, input_lengths, text_mask)
+                if use_lpep:
+                    lang_id, phon_feats = build_lpep_inputs(
+                        texts,
+                        model_params,
+                        phoible_feature_table=phoible_feature_table,
+                        lang_id=lang_ids,
+                    )
+                    t_en = model.text_encoder(
+                        texts,
+                        input_lengths,
+                        text_mask,
+                        lang_id=lang_id,
+                        phon_feats=phon_feats,
+                    )
+                else:
+                    t_en = model.text_encoder(texts, input_lengths, text_mask)
                 asr = (t_en @ s2s_attn_mono)
 
                 d_gt = s2s_attn_mono.sum(axis=-1).detach()
@@ -308,14 +447,17 @@ def main(config_path):
 
             bert_dur = model.bert(texts, attention_mask=(~text_mask).int())
             d_en = model.bert_encoder(bert_dur).transpose(-1, -2) 
+            if getattr(model_params, "use_ppim", False):
+                d_en = maybe_apply_ppim(model, d_en, s_dur, text_mask)
             
             # denoiser training
             if epoch >= diff_epoch:
                 num_steps = np.random.randint(3, 5)
+                diffusion_module = unwrap_module(model.diffusion)
                 
                 if model_params.diffusion.dist.estimate_sigma_data:
-                    model.diffusion.module.diffusion.sigma_data = s_trg.std(axis=-1).mean().item() # batch-wise std estimation
-                    running_std.append(model.diffusion.module.diffusion.sigma_data)
+                    diffusion_module.diffusion.sigma_data = s_trg.std(axis=-1).mean().item() # batch-wise std estimation
+                    running_std.append(diffusion_module.diffusion.sigma_data)
                     
                 if multispeaker:
                     s_preds = sampler(noise = torch.randn_like(s_trg).unsqueeze(1).to(device), 
@@ -332,7 +474,7 @@ def main(config_path):
                           embedding_scale=1,
                              embedding_mask_proba=0.1,
                              num_steps=num_steps).squeeze(1)                    
-                    loss_diff = model.diffusion.module.diffusion(s_trg.unsqueeze(1), embedding=bert_dur).mean() # EDM loss
+                    loss_diff = diffusion_module.diffusion(s_trg.unsqueeze(1), embedding=bert_dur).mean() # EDM loss
                     loss_sty = F.l1_loss(s_preds, s_trg.detach()) # style reconstruction loss
             else:
                 loss_sty = 0
@@ -379,95 +521,193 @@ def main(config_path):
             s_dur = model.predictor_encoder(st.unsqueeze(1) if multispeaker else gt.unsqueeze(1))
             s = model.style_encoder(st.unsqueeze(1) if multispeaker else gt.unsqueeze(1))
             
-            with torch.no_grad():
-                F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1))
-                F0 = F0.reshape(F0.shape[0], F0.shape[1] * 2, F0.shape[2], 1).squeeze()
+            try:
+                if diagnose_non_finite:
+                    debug_raw_tensors.update({
+                        "texts": texts,
+                        "input_lengths": input_lengths,
+                        "mel_input_length": mel_input_length,
+                        "en": en,
+                        "p_en": p_en,
+                        "gt": gt,
+                        "st": st,
+                        "wav": wav,
+                    })
+                    ensure_finite("s2s_attn_mono", s2s_attn_mono, debug_summaries)
+                    ensure_finite("asr", asr, debug_summaries)
+                    ensure_finite("d_gt", d_gt, debug_summaries)
+                    ensure_finite("s_dur", s_dur, debug_summaries)
+                    ensure_finite("style", s, debug_summaries)
+                    ensure_finite("predictor_d", d, debug_summaries)
+                    ensure_finite("predictor_p", p, debug_summaries)
 
-                asr_real = model.text_aligner.get_feature(gt)
+                with torch.no_grad():
+                    F0_real, _, F0 = model.pitch_extractor(gt.unsqueeze(1))
+                    F0 = F0.reshape(F0.shape[0], F0.shape[1] * 2, F0.shape[2], 1).squeeze()
 
-                N_real = log_norm(gt.unsqueeze(1)).squeeze(1)
+                    asr_real = model.text_aligner.get_feature(gt)
+
+                    N_real = log_norm(gt.unsqueeze(1)).squeeze(1)
+                    
+                    y_rec_gt = wav.unsqueeze(1)
+                    y_rec_gt_pred = model.decoder(en, F0_real, N_real, s)
+
+                    if epoch >= joint_epoch:
+                        # ground truth from recording
+                        wav = y_rec_gt # use recording since decoder is tuned
+                    else:
+                        # ground truth from reconstruction
+                        wav = y_rec_gt_pred # use reconstruction since decoder is fixed
+
+                if diagnose_non_finite:
+                    debug_raw_tensors.update({
+                        "F0_real": F0_real,
+                        "N_real": N_real,
+                        "y_rec_gt_pred": y_rec_gt_pred,
+                    })
+                    ensure_finite("F0_real", F0_real, debug_summaries)
+                    ensure_finite("F0_aux", F0, debug_summaries)
+                    ensure_finite("asr_real", asr_real, debug_summaries)
+                    ensure_finite("N_real", N_real, debug_summaries)
+                    ensure_finite("y_rec_gt_pred", y_rec_gt_pred, debug_summaries)
+                    ensure_finite("wav_target", wav, debug_summaries)
+
+                F0_fake, N_fake = model.predictor.F0Ntrain(p_en, s_dur)
+                y_rec = model.decoder(en, F0_fake, N_fake, s)
+
+                debug_raw_tensors.update({
+                    "F0_fake": F0_fake,
+                    "N_fake": N_fake,
+                    "y_rec": y_rec,
+                })
+                ensure_finite("F0_fake", F0_fake, debug_summaries)
+                ensure_finite("N_fake", N_fake, debug_summaries)
+                ensure_finite("y_rec", y_rec, debug_summaries)
+
+                loss_F0_rec =  (F.smooth_l1_loss(F0_real, F0_fake)) / 10
+                loss_norm_rec = F.smooth_l1_loss(N_real, N_fake)
+                ensure_finite("loss_F0_rec", loss_F0_rec, debug_summaries)
+                ensure_finite("loss_norm_rec", loss_norm_rec, debug_summaries)
+
+                if start_ds:
+                    optimizer.zero_grad()
+                    d_loss = dl(wav.detach(), y_rec.detach()).mean()
+                    ensure_finite("d_loss", d_loss, debug_summaries)
+                    d_loss.backward()
+                    if diagnose_non_finite:
+                        ensure_module_finite("msd", model.msd, "grad", debug_summaries)
+                        ensure_module_finite("mpd", model.mpd, "grad", debug_summaries)
+                    optimizer.step('msd')
+                    optimizer.step('mpd')
+                else:
+                    d_loss = 0
+
+                # generator loss
+                optimizer.zero_grad()
+
+                loss_mel = stft_loss(y_rec, wav)
+                if start_ds:
+                    loss_gen_all = gl(wav, y_rec).mean()
+                else:
+                    loss_gen_all = 0
+                loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
+
+                ensure_finite("loss_mel", loss_mel, debug_summaries)
+                if torch.is_tensor(loss_gen_all):
+                    ensure_finite("loss_gen_all", loss_gen_all, debug_summaries)
+                ensure_finite("loss_lm", loss_lm, debug_summaries)
+
+                loss_ce = 0
+                loss_dur = 0
+                valid_dur_items = 0
+                for _s2s_pred, _text_input, _text_length in zip(d, (d_gt), input_lengths):
+                    _text_length = int(_text_length.item()) if torch.is_tensor(_text_length) else int(_text_length)
+                    _s2s_pred = _s2s_pred[:_text_length, :]
+                    _text_input = _text_input[:_text_length].long()
+                    _s2s_trg = torch.zeros_like(_s2s_pred)
+                    for p in range(_s2s_trg.shape[0]):
+                        _s2s_trg[p, :_text_input[p]] = 1
+                    _dur_pred = torch.sigmoid(_s2s_pred).sum(axis=1)
+
+                    if _text_length > 2:
+                        loss_dur += F.l1_loss(
+                            _dur_pred[1:_text_length-1],
+                            _text_input[1:_text_length-1],
+                        )
+                        valid_dur_items += 1
+                    loss_ce += F.binary_cross_entropy_with_logits(_s2s_pred.flatten(), _s2s_trg.flatten())
+
+                loss_ce /= texts.size(0)
+                if valid_dur_items > 0:
+                    loss_dur /= valid_dur_items
+                else:
+                    loss_dur = torch.zeros((), device=texts.device)
+
+                ensure_finite("loss_ce", loss_ce, debug_summaries)
+                ensure_finite("loss_dur", loss_dur, debug_summaries)
+
+                g_loss = loss_params.lambda_mel * loss_mel + \
+                         loss_params.lambda_F0 * loss_F0_rec + \
+                         loss_params.lambda_ce * loss_ce + \
+                         loss_params.lambda_norm * loss_norm_rec + \
+                         loss_params.lambda_dur * loss_dur + \
+                         loss_params.lambda_gen * loss_gen_all + \
+                         loss_params.lambda_slm * loss_lm + \
+                         loss_params.lambda_sty * loss_sty + \
+                         loss_params.lambda_diff * loss_diff
+
+                running_loss += loss_mel.item()
+                ensure_finite("loss_sty", loss_sty if torch.is_tensor(loss_sty) else torch.tensor(loss_sty, device=texts.device), debug_summaries)
+                ensure_finite("loss_diff", loss_diff if torch.is_tensor(loss_diff) else torch.tensor(loss_diff, device=texts.device), debug_summaries)
+                ensure_finite("g_loss", g_loss, debug_summaries)
+                g_loss.backward()
+
+                if diagnose_non_finite:
+                    ensure_module_finite("bert_encoder", model.bert_encoder, "grad", debug_summaries)
+                    ensure_module_finite("bert", model.bert, "grad", debug_summaries)
+                    ensure_module_finite("predictor", model.predictor, "grad", debug_summaries)
+                    ensure_module_finite("predictor_encoder", model.predictor_encoder, "grad", debug_summaries)
+                    if epoch >= diff_epoch:
+                        ensure_module_finite("diffusion", model.diffusion, "grad", debug_summaries)
+                    if epoch >= joint_epoch:
+                        ensure_module_finite("style_encoder", model.style_encoder, "grad", debug_summaries)
+                        ensure_module_finite("decoder", model.decoder, "grad", debug_summaries)
+
+                optimizer.step('bert_encoder')
+                optimizer.step('bert')
+                optimizer.step('predictor')
+                if 'ppim' in optimizer.optimizers:
+                    optimizer.step('ppim')
+                optimizer.step('predictor_encoder')
                 
-                y_rec_gt = wav.unsqueeze(1)
-                y_rec_gt_pred = model.decoder(en, F0_real, N_real, s)
+                if epoch >= diff_epoch:
+                    optimizer.step('diffusion')
+                
+                if diagnose_non_finite:
+                    ensure_module_finite("bert_encoder", model.bert_encoder, "data", debug_summaries)
+                    ensure_module_finite("bert", model.bert, "data", debug_summaries)
+                    ensure_module_finite("predictor", model.predictor, "data", debug_summaries)
+                    ensure_module_finite("predictor_encoder", model.predictor_encoder, "data", debug_summaries)
+                    if epoch >= diff_epoch:
+                        ensure_module_finite("diffusion", model.diffusion, "data", debug_summaries)
 
                 if epoch >= joint_epoch:
-                    # ground truth from recording
-                    wav = y_rec_gt # use recording since decoder is tuned
-                else:
-                    # ground truth from reconstruction
-                    wav = y_rec_gt_pred # use reconstruction since decoder is fixed
+                    optimizer.step('style_encoder')
+                    optimizer.step('decoder')
+                    if diagnose_non_finite:
+                        ensure_module_finite("style_encoder", model.style_encoder, "data", debug_summaries)
+                        ensure_module_finite("decoder", model.decoder, "data", debug_summaries)
+            except FloatingPointError as exc:
+                logger.error("Non-finite detected at epoch %s step %s: %s", epoch + 1, i + 1, exc)
+                save_debug_dump(log_dir, epoch, i, str(exc), debug_summaries, debug_raw_tensors)
+                if fail_fast_on_non_finite:
+                    raise RuntimeError(
+                        f"Non-finite detected at epoch {epoch + 1} step {i + 1}: {exc}. "
+                        f"See debug dump under {log_dir}."
+                    ) from exc
+                continue
 
-            F0_fake, N_fake = model.predictor.F0Ntrain(p_en, s_dur)
-
-            y_rec = model.decoder(en, F0_fake, N_fake, s)
-
-            loss_F0_rec =  (F.smooth_l1_loss(F0_real, F0_fake)) / 10
-            loss_norm_rec = F.smooth_l1_loss(N_real, N_fake)
-
-            if start_ds:
-                optimizer.zero_grad()
-                d_loss = dl(wav.detach(), y_rec.detach()).mean()
-                d_loss.backward()
-                optimizer.step('msd')
-                optimizer.step('mpd')
-            else:
-                d_loss = 0
-
-            # generator loss
-            optimizer.zero_grad()
-
-            loss_mel = stft_loss(y_rec, wav)
-            if start_ds:
-                loss_gen_all = gl(wav, y_rec).mean()
-            else:
-                loss_gen_all = 0
-            loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
-
-            loss_ce = 0
-            loss_dur = 0
-            for _s2s_pred, _text_input, _text_length in zip(d, (d_gt), input_lengths):
-                _s2s_pred = _s2s_pred[:_text_length, :]
-                _text_input = _text_input[:_text_length].long()
-                _s2s_trg = torch.zeros_like(_s2s_pred)
-                for p in range(_s2s_trg.shape[0]):
-                    _s2s_trg[p, :_text_input[p]] = 1
-                _dur_pred = torch.sigmoid(_s2s_pred).sum(axis=1)
-
-                loss_dur += F.l1_loss(_dur_pred[1:_text_length-1], 
-                                       _text_input[1:_text_length-1])
-                loss_ce += F.binary_cross_entropy_with_logits(_s2s_pred.flatten(), _s2s_trg.flatten())
-
-            loss_ce /= texts.size(0)
-            loss_dur /= texts.size(0)
-
-            g_loss = loss_params.lambda_mel * loss_mel + \
-                     loss_params.lambda_F0 * loss_F0_rec + \
-                     loss_params.lambda_ce * loss_ce + \
-                     loss_params.lambda_norm * loss_norm_rec + \
-                     loss_params.lambda_dur * loss_dur + \
-                     loss_params.lambda_gen * loss_gen_all + \
-                     loss_params.lambda_slm * loss_lm + \
-                     loss_params.lambda_sty * loss_sty + \
-                     loss_params.lambda_diff * loss_diff
-
-            running_loss += loss_mel.item()
-            g_loss.backward()
-            if torch.isnan(g_loss):
-                from IPython.core.debugger import set_trace
-                set_trace()
-
-            optimizer.step('bert_encoder')
-            optimizer.step('bert')
-            optimizer.step('predictor')
-            optimizer.step('predictor_encoder')
-            
-            if epoch >= diff_epoch:
-                optimizer.step('diffusion')
-            
             if epoch >= joint_epoch:
-                optimizer.step('style_encoder')
-                optimizer.step('decoder')
-        
                 # randomly pick whether to use in-distribution text
                 if np.random.rand() < 0.5:
                     use_ind = True
@@ -484,7 +724,7 @@ def main(config_path):
                                  waves, 
                                  mel_input_length,
                                  ref_texts, 
-                                 ref_lengths, use_ind, s_trg.detach(), ref if multispeaker else None)
+                                 ref_lengths, use_ind, s_trg.detach(), ref if multispeaker else None, ref_lang_id=lang_ids)
 
                 if slm_out is None:
                     continue
@@ -497,9 +737,9 @@ def main(config_path):
 
                 # compute the gradient norm
                 total_norm = {}
-                for key in model.keys():
+                for key, module in model_module_items(model):
                     total_norm[key] = 0
-                    parameters = [p for p in model[key].parameters() if p.grad is not None and p.requires_grad]
+                    parameters = [p for p in module.parameters() if p.grad is not None and p.requires_grad]
                     for p in parameters:
                         param_norm = p.grad.detach().data.norm(2)
                         total_norm[key] += param_norm.item() ** 2
@@ -507,8 +747,8 @@ def main(config_path):
 
                 # gradient scaling
                 if total_norm['predictor'] > slmadv_params.thresh:
-                    for key in model.keys():
-                        for p in model[key].parameters():
+                    for _, module in model_module_items(model):
+                        for p in module.parameters():
                             if p.grad is not None:
                                 p.grad *= (1 / total_norm['predictor']) 
 
@@ -527,6 +767,8 @@ def main(config_path):
                 optimizer.step('bert_encoder')
                 optimizer.step('bert')
                 optimizer.step('predictor')
+                if 'ppim' in optimizer.optimizers:
+                    optimizer.step('ppim')
                 optimizer.step('diffusion')
 
                 # SLM discriminator loss
@@ -564,7 +806,7 @@ def main(config_path):
         loss_test = 0
         loss_align = 0
         loss_f = 0
-        _ = [model[key].eval() for key in model]
+        set_model_mode(model, train=False)
 
         with torch.no_grad():
             iters_test = 0
@@ -574,7 +816,7 @@ def main(config_path):
                 try:
                     waves = batch[0]
                     batch = [b.to(device) for b in batch[1:]]
-                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels = batch
+                    texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, lang_ids = batch
                     with torch.no_grad():
                         mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
                         text_mask = length_to_mask(input_lengths).to(texts.device)
@@ -588,7 +830,22 @@ def main(config_path):
                         s2s_attn_mono = maximum_path(s2s_attn, mask_ST)
 
                         # encode
-                        t_en = model.text_encoder(texts, input_lengths, text_mask)
+                        if use_lpep:
+                            lang_id, phon_feats = build_lpep_inputs(
+                                texts,
+                                model_params,
+                                phoible_feature_table=phoible_feature_table,
+                                lang_id=lang_ids,
+                            )
+                            t_en = model.text_encoder(
+                                texts,
+                                input_lengths,
+                                text_mask,
+                                lang_id=lang_id,
+                                phon_feats=phon_feats,
+                            )
+                        else:
+                            t_en = model.text_encoder(texts, input_lengths, text_mask)
                         asr = (t_en @ s2s_attn_mono)
 
                         d_gt = s2s_attn_mono.sum(axis=-1).detach()
@@ -610,6 +867,8 @@ def main(config_path):
 
                     bert_dur = model.bert(texts, attention_mask=(~text_mask).int())
                     d_en = model.bert_encoder(bert_dur).transpose(-1, -2) 
+                    if getattr(model_params, "use_ppim", False):
+                        d_en = maybe_apply_ppim(model, d_en, s, text_mask)
                     d, p = model.predictor(d_en, s, 
                                                         input_lengths, 
                                                         s2s_attn_mono, 
@@ -644,17 +903,26 @@ def main(config_path):
                     F0_fake, N_fake = model.predictor.F0Ntrain(p_en, s)
 
                     loss_dur = 0
+                    valid_dur_items = 0
                     for _s2s_pred, _text_input, _text_length in zip(d, (d_gt), input_lengths):
+                        _text_length = int(_text_length.item()) if torch.is_tensor(_text_length) else int(_text_length)
                         _s2s_pred = _s2s_pred[:_text_length, :]
                         _text_input = _text_input[:_text_length].long()
                         _s2s_trg = torch.zeros_like(_s2s_pred)
                         for bib in range(_s2s_trg.shape[0]):
                             _s2s_trg[bib, :_text_input[bib]] = 1
                         _dur_pred = torch.sigmoid(_s2s_pred).sum(axis=1)
-                        loss_dur += F.l1_loss(_dur_pred[1:_text_length-1], 
-                                               _text_input[1:_text_length-1])
+                        if _text_length > 2:
+                            loss_dur += F.l1_loss(
+                                _dur_pred[1:_text_length-1],
+                                _text_input[1:_text_length-1],
+                            )
+                            valid_dur_items += 1
 
-                    loss_dur /= texts.size(0)
+                    if valid_dur_items > 0:
+                        loss_dur /= valid_dur_items
+                    else:
+                        loss_dur = torch.zeros((), device=texts.device)
 
                     s = model.style_encoder(gt.unsqueeze(1))
 
@@ -772,7 +1040,7 @@ def main(config_path):
                 best_loss = loss_test / iters_test
             print('Saving..')
             state = {
-                'net':  {key: model[key].state_dict() for key in model}, 
+                'net': model_state_dict(model),
                 'optimizer': optimizer.state_dict(),
                 'iters': iters,
                 'val_loss': loss_test / iters_test,

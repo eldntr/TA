@@ -4,7 +4,6 @@ import os.path as osp
 import time
 import random
 import numpy as np
-import random
 import soundfile as sf
 import librosa
 
@@ -19,30 +18,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 import pandas as pd
-
-_pad = "$"
-_punctuation = ';:,.!?¡¿—…"«»“” '
-_letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-_letters_ipa = "ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ"
-
-# Export all symbols:
-symbols = [_pad] + list(_punctuation) + list(_letters) + list(_letters_ipa)
-
-dicts = {}
-for i in range(len((symbols))):
-    dicts[symbols[i]] = i
-
-class TextCleaner:
-    def __init__(self, dummy=None):
-        self.word_index_dictionary = dicts
-    def __call__(self, text):
-        indexes = []
-        for char in text:
-            try:
-                indexes.append(self.word_index_dictionary[char])
-            except KeyError:
-                print(text)
-        return indexes
+from text_utils import TextCleaner
 
 np.random.seed(1)
 random.seed(1)
@@ -74,15 +50,40 @@ class FilePathDataset(torch.utils.data.Dataset):
                  validation=False,
                  OOD_data="Data/OOD_texts.txt",
                  min_length=50,
+                 default_lang_id=0,
+                 max_text_length=None,
                  ):
 
         spect_params = SPECT_PARAMS
         mel_params = MEL_PARAMS
 
         _data_list = [l.strip().split('|') for l in data_list]
-        self.data_list = [data if len(data) == 3 else (*data, 0) for data in _data_list]
+        self.data_list = []
+        for data in _data_list:
+            if len(data) < 3:
+                raise ValueError(f"Expected at least 3 columns per row, got {len(data)}: {data}")
+            self.data_list.append(tuple(data[:3]))
         self.text_cleaner = TextCleaner()
         self.sr = sr
+        self.default_lang_id = int(default_lang_id)
+        self.max_text_length = int(max_text_length) if max_text_length is not None else None
+
+        if self.max_text_length is not None:
+            filtered_data_list = []
+            filtered_out = 0
+            for item in self.data_list:
+                cleaned = self.text_cleaner(item[1])
+                token_length = len(cleaned) + 2  # surrounding blank tokens
+                if token_length <= self.max_text_length:
+                    filtered_data_list.append(item)
+                else:
+                    filtered_out += 1
+            self.data_list = filtered_data_list
+            logger.info(
+                "Filtered %s samples longer than max_text_length=%s",
+                filtered_out,
+                self.max_text_length,
+            )
 
         self.df = pd.DataFrame(self.data_list)
 
@@ -99,6 +100,7 @@ class FilePathDataset(torch.utils.data.Dataset):
         self.ptexts = [t.split('|')[idx] for t in tl]
         
         self.root_path = root_path
+        self.blank_index = self.text_cleaner.word_index_dictionary[" "]
 
     def __len__(self):
         return len(self.data_list)
@@ -107,7 +109,7 @@ class FilePathDataset(torch.utils.data.Dataset):
         data = self.data_list[idx]
         path = data[0]
         
-        wave, text_tensor, speaker_id = self._load_tensor(data)
+        wave, text_tensor, speaker_id, lang_id = self._load_tensor(data)
         
         mel_tensor = preprocess(wave).squeeze()
         
@@ -124,20 +126,21 @@ class FilePathDataset(torch.utils.data.Dataset):
         ps = ""
         
         while len(ps) < self.min_length:
-            rand_idx = np.random.randint(0, len(self.ptexts) - 1)
+            rand_idx = np.random.randint(0, len(self.ptexts))
             ps = self.ptexts[rand_idx]
             
             text = self.text_cleaner(ps)
-            text.insert(0, 0)
-            text.append(0)
+            text.insert(0, self.blank_index)
+            text.append(self.blank_index)
 
             ref_text = torch.LongTensor(text)
         
-        return speaker_id, acoustic_feature, text_tensor, ref_text, ref_mel_tensor, ref_label, path, wave
+        return speaker_id, acoustic_feature, text_tensor, ref_text, ref_mel_tensor, ref_label, path, wave, lang_id
 
     def _load_tensor(self, data):
         wave_path, text, speaker_id = data
         speaker_id = int(speaker_id)
+        lang_id = self.default_lang_id
         wave, sr = sf.read(osp.join(self.root_path, wave_path))
         if wave.shape[-1] == 2:
             wave = wave[:, 0].squeeze()
@@ -149,15 +152,15 @@ class FilePathDataset(torch.utils.data.Dataset):
         
         text = self.text_cleaner(text)
         
-        text.insert(0, 0)
-        text.append(0)
+        text.insert(0, self.blank_index)
+        text.append(self.blank_index)
         
         text = torch.LongTensor(text)
 
-        return wave, text, speaker_id
+        return wave, text, speaker_id, lang_id
 
     def _load_data(self, data):
-        wave, text_tensor, speaker_id = self._load_tensor(data)
+        wave, text_tensor, speaker_id, _ = self._load_tensor(data)
         mel_tensor = preprocess(wave).squeeze()
 
         mel_length = mel_tensor.size(1)
@@ -205,10 +208,11 @@ class Collater(object):
         output_lengths = torch.zeros(batch_size).long()
         ref_mels = torch.zeros((batch_size, nmels, self.max_mel_length)).float()
         ref_labels = torch.zeros((batch_size)).long()
+        lang_ids = torch.zeros((batch_size)).long()
         paths = ['' for _ in range(batch_size)]
         waves = [None for _ in range(batch_size)]
         
-        for bid, (label, mel, text, ref_text, ref_mel, ref_label, path, wave) in enumerate(batch):
+        for bid, (label, mel, text, ref_text, ref_mel, ref_label, path, wave, lang_id) in enumerate(batch):
             mel_size = mel.size(1)
             text_size = text.size(0)
             rtext_size = ref_text.size(0)
@@ -225,8 +229,9 @@ class Collater(object):
             
             ref_labels[bid] = ref_label
             waves[bid] = wave
+            lang_ids[bid] = lang_id
 
-        return waves, texts, input_lengths, ref_texts, ref_lengths, mels, output_lengths, ref_mels
+        return waves, texts, input_lengths, ref_texts, ref_lengths, mels, output_lengths, ref_mels, lang_ids
 
 
 
@@ -252,4 +257,3 @@ def build_dataloader(path_list,
                              pin_memory=(device != 'cpu'))
 
     return data_loader
-
