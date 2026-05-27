@@ -1,5 +1,5 @@
 log_dir: "Models/StyleTTS2"
-first_stage_path: "epoch_1st_00100.pth"
+first_stage_path: "epoch_1st_00150.pth"
 save_freq: 50
 log_interval: 1
 device: "cuda"
@@ -17,10 +17,10 @@ ASR_path: "Utils/ASR/epoch_00060_bpe.pth"
 PLBERT_dir: 'Utils/PLBERT/'
 
 data_params:
-  train_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_30m/train_list.txt"
-  val_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_30m/val_list.txt"
+  train_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_1m/train_list.txt"
+  val_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_1m/val_list.txt"
   root_path: "/home/user/TA-Eldin/dataset/dataset_sidon/wavs"
-  OOD_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_30m/OOD_texts.txt"
+  OOD_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_1m/OOD_texts.txt"
   min_length: 50 # sample until texts with this size are obtained for OOD texts
   dataset_config:
     default_lang_id: 0
@@ -42,7 +42,7 @@ model_params:
   n_layer: 3
   n_mels: 80
 
-  n_token: 181 # number of phoneme tokens
+  n_token: 177 # number of phoneme tokens
   max_dur: 50 # maximum duration of a single phoneme
   style_dim: 128 # style vector size
 
@@ -55,7 +55,7 @@ model_params:
   phon_feat_dim: 0
   lang_emb_dim: 16
   lpep_dropout: 0.1
-  phoible_feature_table_path: "data/phoible/lpep_phoible_table.pt"
+  phoible_feature_table_path: "Data/phoible/lpep_phoible_table_id_jv.pt"
 
   decoder:
       type: 'istftnet' # either hifigan or istftnet
