@@ -452,11 +452,14 @@ def main(config_path):
             loss_F0_rec =  (F.smooth_l1_loss(F0_real, F0_fake)) / 10
             loss_norm_rec = F.smooth_l1_loss(N_real, N_fake)
 
-            optimizer.zero_grad()
-            d_loss = dl(wav.detach(), y_rec.detach()).mean()
-            d_loss.backward()
-            optimizer.step('msd')
-            optimizer.step('mpd')
+            if not peft_enabled:
+                optimizer.zero_grad()
+                d_loss = dl(wav.detach(), y_rec.detach()).mean()
+                d_loss.backward()
+                optimizer.step('msd')
+                optimizer.step('mpd')
+            else:
+                d_loss = torch.tensor(0.0, device=device)
 
             # generator loss
             optimizer.zero_grad()
@@ -606,7 +609,7 @@ def main(config_path):
                     optimizer.step('diffusion')
 
                     # SLM discriminator loss
-                    if d_loss_slm != 0:
+                    if d_loss_slm != 0 and not peft_enabled:
                         optimizer.zero_grad()
                         d_loss_slm.backward(retain_graph=True)
                         optimizer.step('wd')
