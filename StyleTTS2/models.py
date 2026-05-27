@@ -887,16 +887,59 @@ def build_model(args, text_aligner, pitch_extractor, bert):
 def load_checkpoint(model, optimizer, path, load_only_params=True, ignore_modules=[]):
     state = torch.load(path, map_location='cpu')
     params = state['net']
+    
+    def normalize_key(k):
+        if k.startswith('module.'):
+            k = k[7:]
+        if k.startswith('unet.'):
+            k = 'diffusion.net.' + k[5:]
+        return k
+
     for key, module in model_module_items(model):
         if key in params and key not in ignore_modules:
-            print('%s loaded' % key)
-            module.load_state_dict(params[key], strict=False)
+            checkpoint_state = params[key]
+            model_state = module.state_dict()
+            
+            # Map normalized model state keys to original model state keys
+            normalized_model_keys = {normalize_key(mk): mk for mk in model_state.keys()}
+            
+            # Filter checkpoint state to match model state keys and shapes
+            filtered_state = {}
+            skipped_params = []
+            for ck, cv in checkpoint_state.items():
+                normalized_ck = normalize_key(ck)
+                if normalized_ck in normalized_model_keys:
+                    mk = normalized_model_keys[normalized_ck]
+                    if cv.shape == model_state[mk].shape:
+                        filtered_state[mk] = cv
+                    else:
+                        skipped_params.append(
+                            f"{normalized_ck} (shape mismatch: checkpoint {list(cv.shape)} vs model {list(model_state[mk].shape)})"
+                        )
+                else:
+                    # Parameter is in checkpoint but not in model, ignore
+                    pass
+            
+            if skipped_params:
+                print(f"Partial load warning for module '{key}': skipping {len(skipped_params)} parameters due to shape mismatch (retaining randomly initialized weights):")
+                for msg in skipped_params:
+                    print(f"  - {msg}")
+            
+            module.load_state_dict(filtered_state, strict=False)
+            loaded_pct = (len(filtered_state) / len(model_state)) * 100 if model_state else 0
+            print(f"{key} loaded partially ({len(filtered_state)}/{len(model_state)} parameters, {loaded_pct:.1f}%)")
+        elif key not in params and key not in ignore_modules:
+            # Module exists in model but is missing from checkpoint (e.g. PPIM)
+            # PyTorch's default module initialization has already run, so it retains randomly initialized weights
+            print(f"Module '{key}' not found in checkpoint; retaining randomly initialized weights.")
+            
     set_model_mode(model, train=False)
     
     if not load_only_params:
         epoch = state["epoch"]
         iters = state["iters"]
-        optimizer.load_state_dict(state["optimizer"])
+        if optimizer is not None:
+            optimizer.load_state_dict(state["optimizer"])
     else:
         epoch = 0
         iters = 0

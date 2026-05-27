@@ -7,9 +7,9 @@ epochs_1st: 200 # number of epochs for first stage training (pre-training)
 epochs_2nd: 50 # number of peochs for second stage training (joint training)
 batch_size: 4
 max_len: 300 # maximum number of frames
-pretrained_model: ""
+pretrained_model: "epoch_2nd_00100.pth"
 second_stage_load_pretrained: true # set to true if the pre-trained model is for 2nd stage
-load_only_params: false # set to true if do not want to load epoch numbers and optimizer parameters
+load_only_params: true # set to true if do not want to load epoch numbers and optimizer parameters
 
 F0_path: "Utils/JDC/bst.t7"
 ASR_config: "Utils/ASR/config.yml"
@@ -42,7 +42,7 @@ model_params:
   n_layer: 3
   n_mels: 80
 
-  n_token: 177 # number of phoneme tokens
+  n_token: 181 # number of phoneme tokens
   max_dur: 50 # maximum duration of a single phoneme
   style_dim: 128 # style vector size
 
