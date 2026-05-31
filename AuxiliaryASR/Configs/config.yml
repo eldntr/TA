@@ -2,16 +2,16 @@ log_dir: "Checkpoint"
 save_freq: 10
 device: "cuda"
 epochs: 200
-batch_size: 8
-pretrained_model: "Checkpoint/epoch_00050.pth"
-load_only_params: false
-resume_epoch: 51
-train_data: "../dataset_sidon/train_list.txt"
-val_data: "../dataset_sidon/val_list.txt"
+batch_size: 64
+pretrained_model: "/home/user/TA-Eldin/TA/AuxiliaryASR/Checkpoint/epoch_00190.pth"
+load_only_params: true
+resume_epoch: 191
+train_data: "/home/user/TA-Eldin/TA/create-dataset/id/final_dataset/list/train_list.txt"
+val_data: "/home/user/TA-Eldin/TA/create-dataset/id/final_dataset/list/val_list.txt"
 
 dataset_params:
-  sr: 16000
-  data_root: "../dataset_sidon/wavs"
+  sr: 24000
+  data_root: "/home/user/TA-Eldin/TA/create-dataset/id/final_dataset/wavs"
 
 model_params:
    input_dim: 80
@@ -20,4 +20,4 @@ model_params:
    token_embedding_dim: 256
 
 optimizer_params:
-  lr: 0.0005
+  lr: 0.00005

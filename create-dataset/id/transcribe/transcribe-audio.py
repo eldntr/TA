@@ -70,7 +70,7 @@ def process_audio_files(input_dir, output_dir, metadata_path, speaker_map_path, 
             
             waveform, sample_rate = torchaudio.load(audio_path)
             
-            pad_frames = int(0.2 * sample_rate)
+            pad_frames = 0 # No padding
             max_frames = waveform.shape[1]
             
             segment_idx = 1
@@ -121,7 +121,7 @@ def process_audio_files(input_dir, output_dir, metadata_path, speaker_map_path, 
 
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    input_directory = os.path.join(os.path.dirname(script_dir), "dataset_audio")
+    input_directory = os.path.join(os.path.dirname(script_dir), "download", "dataset_audio")
     processed_dir = os.path.join(script_dir, "processed_dataset")
     output_directory = os.path.join(processed_dir, "wavs")
     metadata_file = os.path.join(processed_dir, "metadata.csv")

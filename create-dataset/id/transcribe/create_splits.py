@@ -3,7 +3,8 @@ import random
 
 def create_splits(train_ratio=0.9, val_ratio=0.05, test_ratio=0.05):
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    processed_dir = os.path.join(script_dir, "processed_dataset")
+    id_dir = os.path.dirname(script_dir)
+    processed_dir = os.path.join(id_dir, "final_dataset")
     metadata_path = os.path.join(processed_dir, "metadata.csv")
     
     if not os.path.exists(metadata_path):

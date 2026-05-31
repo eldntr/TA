@@ -29,7 +29,7 @@ def download_audio(csv_file, output_dir):
                     'preferredcodec': 'wav',
                 }],
                 'postprocessor_args': [
-                    '-ar', '16000',
+                    '-ar', '24000',
                     '-ac', '1'
                 ],
                 'ignoreerrors': True,

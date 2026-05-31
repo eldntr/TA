@@ -219,9 +219,9 @@ def restore_audio_directory(input_dir, output_dir, device="auto", batch_size=4):
             waveform, sample_rate = torchaudio.load(str(audio_path))
             restored = restorer.restore_waveform(waveform, sample_rate, batch_size)
             
-            # Save at 16kHz mono (matching your pipeline's needs)
+            # Save at 24kHz mono (matching your pipeline's needs)
             save_waveform = restored.unsqueeze(0)
-            target_sr = 16000
+            target_sr = 24000
             if target_sr != restorer.target_sample_rate:
                 save_waveform = torchaudio.functional.resample(
                     save_waveform,
@@ -239,8 +239,8 @@ if __name__ == "__main__":
     # parent: TA/create-dataset/id
     base_dir = os.path.dirname(script_dir)
     
-    input_directory = os.path.join(base_dir, "dataset_audio")
-    output_directory = os.path.join(base_dir, "dataset_audio_restored")
+    input_directory = os.path.join(base_dir, "transcribe", "processed_dataset", "wavs")
+    output_directory = os.path.join(base_dir, "transcribe", "processed_dataset_restored", "wavs")
     
     print(f"Source: {input_directory}")
     print(f"Destination: {output_directory}")

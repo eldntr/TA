@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dataset Audio Viewer</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Audio Dataset Viewer</h1>
+            <p>Dengarkan dan verifikasi dataset audio bersih Anda</p>
+        </header>
+        
+        <main class="glass-card">
+            <div class="status-badge" id="status-badge">Memuat Metadata...</div>
+            <div class="filename" id="filename-display">file_name.wav</div>
+            
+            <div class="transcript-container">
+                <p id="transcript-display" class="transcript-text">...</p>
+            </div>
+            
+            <div class="player-controls">
+                <div class="audio-box">
+                    <p class="audio-label">Sebelum Restorasi (Original)</p>
+                    <div class="waveform-container">
+                        <button id="play-btn-original" class="play-btn">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        </button>
+                        <div id="waveform-original" class="waveform"></div>
+                    </div>
+                </div>
+                <div class="audio-box">
+                    <p class="audio-label">Sesudah Restorasi (Bersih)</p>
+                    <div class="waveform-container">
+                        <button id="play-btn-restored" class="play-btn">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        </button>
+                        <div id="waveform-restored" class="waveform"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="action-buttons">
+                <button id="shuffle-btn" class="btn primary-btn" disabled>
+                    <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+                    Shuffle Audio
+                </button>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Total data di metadata: <span id="total-count">0</span></p>
+        </footer>
+    </div>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

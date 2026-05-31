@@ -15,7 +15,7 @@ dataset/
 Checkpoint
 dataset_sidon
 
-*.pth
+.pth
 
 Sidon
 
@@ -27,3 +27,7 @@ debug_10m
 Models
 
 dataset_*/
+
+final_dataset
+
+final_dataset.zip
