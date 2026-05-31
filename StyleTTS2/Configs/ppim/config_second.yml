@@ -13,14 +13,14 @@ load_only_params: true
 
 F0_path: "Utils/JDC/bst.t7"
 ASR_config: "Utils/ASR/config.yml"
-ASR_path: "Utils/ASR/epoch_00060_bpe.pth"
+ASR_path: "Utils/ASR/epoch_00200.pth"
 PLBERT_dir: 'Utils/PLBERT/'
 
 data_params:
-  train_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_1m/train_list.txt"
-  val_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_1m/val_list.txt"
-  root_path: "/home/user/TA-Eldin/dataset/dataset_sidon/wavs"
-  OOD_data: "/home/user/TA-Eldin/dataset/dataset_sidon/dataset_sidon_phonemized_1m/OOD_texts.txt"
+  train_data: "../create-dataset/id/final_dataset/phonemized_lists/train_list_phon.txt"
+  val_data: "../create-dataset/id/final_dataset/phonemized_lists/val_list_phon.txt"
+  root_path: "../create-dataset/id/final_dataset/wavs"
+  OOD_data: "../create-dataset/id/final_dataset/phonemized_lists/val_list_phon.txt"
   min_length: 50
   dataset_config:
     default_lang_id: 0
