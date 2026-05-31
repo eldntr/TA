@@ -21,4 +21,12 @@ dependencies = [
     "transformers>=4.57.6",
     "whisperx>=3.8.5",
     "yt-dlp>=2026.3.17",
+    "accelerate",
+    "huggingface_hub",
+    "librosa",
+    "matplotlib",
+    "munch",
+    "einops",
+    "einops-exts",
+    "monotonic-align @ git+https://github.com/resemble-ai/monotonic_align.git",
 ]

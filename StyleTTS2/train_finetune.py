@@ -225,8 +225,11 @@ def main(config_path):
         
     # load models if there is a model
     if load_pretrained:
-        model, optimizer, start_epoch, iters = load_checkpoint(model,  optimizer, config['pretrained_model'],
-                                    load_only_params=config.get('load_only_params', True))
+        model, optimizer, start_epoch, iters = load_checkpoint(
+            model, optimizer, config['pretrained_model'],
+            load_only_params=config.get('load_only_params', True),
+            ignore_modules=['bert', 'bert_encoder', 'text_encoder', 'text_aligner']
+        )
 
     if peft_enabled:
         freeze_all(model)

@@ -4,8 +4,8 @@ save_freq: 50
 log_interval: 1
 device: "cuda"
 epochs_1st: 200
-epochs_2nd: 50
-batch_size: 4
+epochs_2nd: 30
+batch_size: 24
 max_len: 300
 pretrained_model: "epoch_2nd_00100.pth"
 second_stage_load_pretrained: true
@@ -20,7 +20,7 @@ data_params:
   train_data: "../create-dataset/id/final_dataset/phonemized_lists/train_list_phon.txt"
   val_data: "../create-dataset/id/final_dataset/phonemized_lists/val_list_phon.txt"
   root_path: "../create-dataset/id/final_dataset/wavs"
-  OOD_data: "../create-dataset/id/final_dataset/phonemized_lists/val_list_phon.txt"
+  OOD_data: "../create-dataset/id/final_dataset/phonemized_lists/test_list_phon.txt"
   min_length: 50
   dataset_config:
     default_lang_id: 0
