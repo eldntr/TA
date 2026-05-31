@@ -87,15 +87,15 @@ loss_params:
     lambda_slm: 1.
     lambda_mono: 1.
     lambda_s2s: 1.
-    TMA_epoch: 50
+    TMA_epoch: 20
     lambda_F0: 1.
     lambda_norm: 1.
     lambda_dur: 1.
     lambda_ce: 20.
     lambda_sty: 1.
     lambda_diff: 1.
-    diff_epoch: 20
-    joint_epoch: 50
+    diff_epoch: 5
+    joint_epoch: 10
 
 optimizer_params:
   lr: 0.0001

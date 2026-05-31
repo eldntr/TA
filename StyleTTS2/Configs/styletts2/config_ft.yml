@@ -90,8 +90,8 @@ loss_params:
     lambda_ce: 20.
     lambda_sty: 1.
     lambda_diff: 1.
-    diff_epoch: 10
-    joint_epoch: 30
+    diff_epoch: 5
+    joint_epoch: 10
 
 optimizer_params:
   lr: 0.0001
