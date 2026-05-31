@@ -67,8 +67,9 @@ echo "  Jumlah GPU Terdeteksi: $NUM_GPUS GPU"
 echo "  Config   : $CONFIG_PATH"
 echo "========================================================="
 
-# --- Menjalankan Accelerate Launch ---
+# --- Menjalankan Accelerate Launch / Python ---
 ACCELERATE="../.venv/bin/accelerate"
+PYTHON="../.venv/bin/python"
 
 if [ ! -f "$ACCELERATE" ]; then
     echo "Error: Command accelerate tidak ditemukan di $ACCELERATE"
@@ -84,7 +85,7 @@ if [ "$STAGE" == "first" ]; then
         $SCRIPT \
         --config_path $CONFIG_PATH
 else
-    echo "Menjalankan Stage 2 / FT menggunakan Python3 secara langsung (DataParallel)..."
+    echo "Menjalankan Stage 2 / FT menggunakan Python secara langsung (DataParallel)..."
     # DataParallel akan mendeteksi seluruh GPU dan mendistribusikan batch secara otomatis
-    python3 $SCRIPT --config_path $CONFIG_PATH
+    $PYTHON $SCRIPT --config_path $CONFIG_PATH
 fi
