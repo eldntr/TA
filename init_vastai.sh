@@ -12,8 +12,8 @@ fi
 
 # 2. Buat virtual environment dengan uv
 if [ ! -d ".venv" ]; then
-    echo "[2/3] Membuat Virtual Environment (.venv) dengan uv..."
-    uv venv
+    echo "[2/3] Membuat Virtual Environment (.venv) dengan uv (Python 3.11)..."
+    uv venv --python 3.11
 else
     echo "[2/3] Virtual Environment (.venv) sudah ada."
 fi
