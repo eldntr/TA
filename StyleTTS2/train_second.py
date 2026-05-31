@@ -820,6 +820,8 @@ def main(config_path):
                     waves = batch[0]
                     batch = [b.to(device) for b in batch[1:]]
                     texts, input_lengths, ref_texts, ref_lengths, mels, mel_input_length, ref_mels, lang_ids = batch
+                    if texts.size(0) < 2 and torch.cuda.device_count() > 1:
+                        continue
                     with torch.no_grad():
                         mask = length_to_mask(mel_input_length // (2 ** n_down)).to('cuda')
                         text_mask = length_to_mask(input_lengths).to(texts.device)
