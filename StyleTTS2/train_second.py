@@ -180,8 +180,8 @@ def main(config_path):
     save_freq = config.get('save_freq', 2)
     log_interval = config.get('log_interval', 10)
     saving_epoch = config.get('save_freq', 2)
-    diagnose_non_finite = config.get('diagnose_non_finite', False)
-    fail_fast_on_non_finite = config.get('fail_fast_on_non_finite', diagnose_non_finite)
+    diagnose_non_finite = False
+    fail_fast_on_non_finite = False
 
     data_params = config.get('data_params', None)
     sr = config['preprocess_params'].get('sr', 24000)

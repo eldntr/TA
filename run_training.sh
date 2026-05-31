@@ -76,8 +76,15 @@ if [ ! -f "$ACCELERATE" ]; then
     exit 1
 fi
 
-$ACCELERATE launch \
-    --mixed_precision=fp16 \
-    --num_processes=$NUM_GPUS \
-    $SCRIPT \
-    --config_path $CONFIG_PATH
+if [ "$STAGE" == "first" ]; then
+    echo "Menjalankan Stage 1 menggunakan Accelerate Launch (DDP)..."
+    $ACCELERATE launch \
+        --mixed_precision=no \
+        --num_processes=$NUM_GPUS \
+        $SCRIPT \
+        --config_path $CONFIG_PATH
+else
+    echo "Menjalankan Stage 2 / FT menggunakan Python3 secara langsung (DataParallel)..."
+    # DataParallel akan mendeteksi seluruh GPU dan mendistribusikan batch secara otomatis
+    python3 $SCRIPT --config_path $CONFIG_PATH
+fi

@@ -5,7 +5,7 @@ log_interval: 1
 device: "cuda"
 epochs_1st: 200
 epochs_2nd: 30
-batch_size: 24
+batch_size: 8
 max_len: 300
 pretrained_model: "epoch_2nd_00100.pth"
 second_stage_load_pretrained: true
@@ -34,7 +34,7 @@ preprocess_params:
     hop_length: 300
 
 model_params:
-  multispeaker: false
+  multispeaker: true
   dim_in: 64
   hidden_dim: 512
   max_conv_dim: 512
@@ -114,6 +114,6 @@ slmadv_params:
   scale: 0.01
   sig: 1.5
 
-use_data_parallel: false
-diagnose_non_finite: true
-fail_fast_on_non_finite: true
+use_data_parallel: true
+diagnose_non_finite: false
+fail_fast_on_non_finite: false
