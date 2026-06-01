@@ -3,7 +3,7 @@ first_stage_path: "first_stage.pth"
 save_freq: 2
 log_interval: 10
 device: "cuda"
-epochs_1st: 30
+epochs_1st: 20
 epochs_2nd: 100
 batch_size: 24
 max_len: 400
@@ -31,7 +31,7 @@ preprocess_params:
     hop_length: 300
 
 model_params:
-  multispeaker: false
+  multispeaker: true
   dim_in: 64 
   hidden_dim: 512
   max_conv_dim: 512
@@ -87,15 +87,15 @@ loss_params:
     lambda_slm: 1.
     lambda_mono: 1.
     lambda_s2s: 1.
-    TMA_epoch: 20
+    TMA_epoch: 5
     lambda_F0: 1.
     lambda_norm: 1.
     lambda_dur: 1.
     lambda_ce: 20.
     lambda_sty: 1.
     lambda_diff: 1.
-    diff_epoch: 5
-    joint_epoch: 10
+    diff_epoch: 2
+    joint_epoch: 5
 
 optimizer_params:
   lr: 0.0001

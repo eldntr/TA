@@ -16,11 +16,13 @@ ASR_path: "Utils/ASR/epoch_00200.pth"
 PLBERT_dir: 'Utils/PLBERT/'
 
 data_params:
-  train_data: "../create-dataset/id/final_dataset/phonemized_lists/train_list_phon.txt"
-  val_data: "../create-dataset/id/final_dataset/phonemized_lists/val_list_phon.txt"
-  root_path: "../create-dataset/id/final_dataset/wavs"
-  OOD_data: "../create-dataset/id/final_dataset/phonemized_lists/test_list_phon.txt"
+  train_data: "../create-dataset/jv/final_dataset/phonemized_lists/train_list_phon.txt"
+  val_data: "../create-dataset/jv/final_dataset/phonemized_lists/val_list_phon.txt"
+  root_path: "../create-dataset/jv/final_dataset/wavs"
+  OOD_data: "../create-dataset/jv/final_dataset/phonemized_lists/test_list_phon.txt"
   min_length: 50
+  dataset_config:
+    default_lang_id: 1
 
 preprocess_params:
   sr: 24000

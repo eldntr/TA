@@ -1,14 +1,14 @@
 log_dir: "Models/styletts2"
 first_stage_path: "first_stage.pth"
-save_freq: 50
+save_freq: 2
 log_interval: 1
 device: "cuda"
 epochs_1st: 200
-epochs_2nd: 15
+epochs_2nd: 10
 batch_size: 8
 max_len: 300
 pretrained_model: "epoch_2nd_00100.pth"
-second_stage_load_pretrained: true
+second_stage_load_pretrained: false
 load_only_params: true
 
 F0_path: "Utils/JDC/bst.t7"
@@ -56,10 +56,10 @@ model_params:
 
   decoder:
       type: 'istftnet'
-      resblock_kernel_sizes: [3,7,11]
-      upsample_rates :  [10, 6]
+      resblock_kernel_sizes: [3, 7, 11]
+      upsample_rates: [10, 6]
       upsample_initial_channel: 512
-      resblock_dilation_sizes: [[1,3,5], [1,3,5], [1,3,5]]
+      resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
       upsample_kernel_sizes: [20, 12]
       gen_istft_n_fft: 20
       gen_istft_hop_size: 5
@@ -85,18 +85,18 @@ model_params:
       std: 1.0
 
 loss_params:
-    lambda_mel: 5.
-    lambda_gen: 1.
-    lambda_slm: 1.
-    lambda_mono: 1.
-    lambda_s2s: 1.
-    TMA_epoch: 15
-    lambda_F0: 1.
-    lambda_norm: 1.
-    lambda_dur: 1.
-    lambda_ce: 20.
-    lambda_sty: 1.
-    lambda_diff: 1.
+    lambda_mel: 5.0
+    lambda_gen: 1.0
+    lambda_slm: 1.0
+    lambda_mono: 1.0
+    lambda_s2s: 1.0
+    TMA_epoch: 5
+    lambda_F0: 1.0
+    lambda_norm: 1.0
+    lambda_dur: 1.0
+    lambda_ce: 20.0
+    lambda_sty: 1.0
+    lambda_diff: 1.0
     diff_epoch: 2
     joint_epoch: 5
 

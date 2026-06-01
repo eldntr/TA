@@ -1,14 +1,14 @@
 log_dir: "Models/lpep"
 first_stage_path: "first_stage.pth"
-save_freq: 50
+save_freq: 2
 log_interval: 1
 device: "cuda"
 epochs_1st: 200
-epochs_2nd: 30
+epochs_2nd: 10
 batch_size: 24
 max_len: 300
 pretrained_model: "epoch_2nd_00100.pth"
-second_stage_load_pretrained: true
+second_stage_load_pretrained: false
 load_only_params: true
 
 F0_path: "Utils/JDC/bst.t7"
@@ -34,7 +34,7 @@ preprocess_params:
     hop_length: 300
 
 model_params:
-  multispeaker: false
+  multispeaker: true
   dim_in: 64
   hidden_dim: 512
   max_conv_dim: 512
@@ -90,15 +90,15 @@ loss_params:
     lambda_slm: 1.
     lambda_mono: 1.
     lambda_s2s: 1.
-    TMA_epoch: 15
+    TMA_epoch: 5
     lambda_F0: 1.
     lambda_norm: 1.
     lambda_dur: 1.
     lambda_ce: 20.
     lambda_sty: 1.
     lambda_diff: 1.
-    diff_epoch: 5
-    joint_epoch: 10
+    diff_epoch: 2
+    joint_epoch: 5
 
 optimizer_params:
   lr: 0.00005
@@ -114,6 +114,6 @@ slmadv_params:
   scale: 0.01
   sig: 1.5
 
-use_data_parallel: false
-diagnose_non_finite: true
-fail_fast_on_non_finite: true
+use_data_parallel: true
+diagnose_non_finite: false
+fail_fast_on_non_finite: false

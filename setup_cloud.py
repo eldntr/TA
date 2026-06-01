@@ -10,17 +10,34 @@ def setup_cloud():
     
     # 1. Pastikan struktur direktori ada
     os.makedirs("create-dataset/id", exist_ok=True)
+    os.makedirs("create-dataset/jv", exist_ok=True)
     os.makedirs("StyleTTS2/Models/styletts2", exist_ok=True)
-
+    
     # 2. Download Dataset dari HuggingFace (repo tipe dataset)
-    print("\n[1/4] Mengunduh final_dataset.zip dari eldntr/final_dataset...")
-    dataset_zip = hf_hub_download(repo_id="eldntr/final_dataset", filename="final_dataset.zip", repo_type="dataset")
+    print("\n[1/4] Mengunduh final_dataset.zip dan final_dataset_jv.zip dari eldntr/final_dataset...")
+    dataset_zip_id = hf_hub_download(
+        repo_id="eldntr/final_dataset",
+        filename="final_dataset.zip",
+        repo_type="dataset",
+    )
+    dataset_zip_jv = hf_hub_download(
+        repo_id="eldntr/final_dataset",
+        filename="final_dataset_jv.zip",
+        repo_type="dataset",
+    )
     
     # 3. Ekstrak Dataset
-    print("\n[2/4] Mengekstrak dataset ke create-dataset/id/...")
-    with zipfile.ZipFile(dataset_zip, 'r') as zip_ref:
+    print("\n[2/4] Mengekstrak dataset ke create-dataset/id/ dan create-dataset/jv/...")
+    with zipfile.ZipFile(dataset_zip_id, 'r') as zip_ref:
         zip_ref.extractall("create-dataset/id/")
-    print("Dataset berhasil diekstrak!")
+    with zipfile.ZipFile(dataset_zip_jv, 'r') as zip_ref:
+        zip_ref.extractall("create-dataset/jv/")
+        
+    # Rename folder jv jika hasil ekstraksinya bernama final_dataset_jv
+    if os.path.exists("create-dataset/jv/final_dataset_jv") and not os.path.exists("create-dataset/jv/final_dataset"):
+        os.rename("create-dataset/jv/final_dataset_jv", "create-dataset/jv/final_dataset")
+        print("Folder final_dataset_jv berhasil diganti nama menjadi final_dataset.")
+    print("Kedua dataset berhasil diekstrak!")
 
     # 4. Download Pretrained Weights StyleTTS2
     print("\n[3/4] Mengunduh bobot pretrained StyleTTS2-LJSpeech...")
@@ -48,6 +65,35 @@ def setup_cloud():
         content = re.sub(r'val_data:\s*".*?"', 'val_data: "../create-dataset/id/final_dataset/phonemized_lists/val_list_phon.txt"', content)
         content = re.sub(r'root_path:\s*".*?"', 'root_path: "../create-dataset/id/final_dataset/wavs"', content)
         content = re.sub(r'OOD_data:\s*".*?"', 'OOD_data: "../create-dataset/id/final_dataset/phonemized_lists/test_list_phon.txt"', content)
+
+        # Khusus fine-tuning Jawa, arahkan config_ft ke dataset Jawa.
+        if os.path.basename(file_path) == "config_ft.yml":
+            content = re.sub(
+                r'train_data:\s*".*?"',
+                'train_data: "../create-dataset/jv/final_dataset/phonemized_lists/train_list_phon.txt"',
+                content,
+            )
+            content = re.sub(
+                r'val_data:\s*".*?"',
+                'val_data: "../create-dataset/jv/final_dataset/phonemized_lists/val_list_phon.txt"',
+                content,
+            )
+            content = re.sub(
+                r'root_path:\s*".*?"',
+                'root_path: "../create-dataset/jv/final_dataset/wavs"',
+                content,
+            )
+            content = re.sub(
+                r'OOD_data:\s*".*?"',
+                'OOD_data: "../create-dataset/jv/final_dataset/phonemized_lists/test_list_phon.txt"',
+                content,
+            )
+            # Pastikan dataset_config diset default_lang_id: 1 untuk bahasa Jawa
+            if "dataset_config:" not in content:
+                content = content.replace(
+                    "preprocess_params:",
+                    "  dataset_config:\n    default_lang_id: 1\n\npreprocess_params:"
+                )
 
         # Update jalur pretrained model ke file yang baru didownload
         # Jika file config_second.yml atau config_ft.yml memakai epoch_2nd_...
