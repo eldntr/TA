@@ -113,10 +113,10 @@ def prune_dataset(lang_dir, min_dur=2.0, max_dur=7.0):
     print(f"\nPruning untuk [{lang_name.upper()}] selesai!")
 
 if __name__ == "__main__":
-    create_dataset_dir = "/home/user/TA-Eldin/TA/create-dataset"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     
     # Jalankan pruning untuk dataset Indonesia (id) dan Jawa (jv)
     for lang in ["id", "jv"]:
-        lang_path = os.path.join(create_dataset_dir, lang)
+        lang_path = os.path.join(script_dir, lang)
         if os.path.exists(lang_path):
             prune_dataset(lang_path, min_dur=2.0, max_dur=7.0)
