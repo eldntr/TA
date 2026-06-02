@@ -1,4 +1,5 @@
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import os.path as osp
 import re
 import sys
@@ -58,6 +59,7 @@ def main(config_path):
     logger.logger.addHandler(file_handler)
     
     batch_size = config.get('batch_size', 10)
+    accumulation_steps = config.get('gradient_accumulation_steps', 1)
     device = accelerator.device
     
     epochs = config.get('epochs_1st', 200)
@@ -279,16 +281,17 @@ def main(config_path):
             # discriminator loss
             
             if epoch >= TMA_epoch:
-                optimizer.zero_grad()
-                d_loss = dl(wav.detach().unsqueeze(1).float(), y_rec.detach()).mean()
+                d_loss = dl(wav.detach().unsqueeze(1).float(), y_rec.detach()).mean() / accumulation_steps
                 accelerator.backward(d_loss)
-                optimizer.step('msd')
-                optimizer.step('mpd')
+                if (i+1) % accumulation_steps == 0 or (i+1) == len(train_dataloader):
+                    optimizer.step('msd')
+                    optimizer.step('mpd')
+                    optimizer.zero_grad('msd')
+                    optimizer.zero_grad('mpd')
             else:
                 d_loss = 0
 
             # generator loss
-            optimizer.zero_grad()
             loss_mel = stft_loss(y_rec.squeeze(), wav.detach())
             
             if epoch >= TMA_epoch: # start TMA training
@@ -317,15 +320,24 @@ def main(config_path):
             
             running_loss += accelerator.gather(loss_mel).mean().item()
 
+            g_loss = g_loss / accumulation_steps
             accelerator.backward(g_loss)
             
-            optimizer.step('text_encoder')
-            optimizer.step('style_encoder')
-            optimizer.step('decoder')
-            
-            if epoch >= TMA_epoch: 
-                optimizer.step('text_aligner')
-                optimizer.step('pitch_extractor')
+            if (i+1) % accumulation_steps == 0 or (i+1) == len(train_dataloader):
+                optimizer.step('text_encoder')
+                optimizer.step('style_encoder')
+                optimizer.step('decoder')
+                
+                if epoch >= TMA_epoch: 
+                    optimizer.step('text_aligner')
+                    optimizer.step('pitch_extractor')
+
+                optimizer.zero_grad('text_encoder')
+                optimizer.zero_grad('style_encoder')
+                optimizer.zero_grad('decoder')
+                if epoch >= TMA_epoch:
+                    optimizer.zero_grad('text_aligner')
+                    optimizer.zero_grad('pitch_extractor')
             
             iters = iters + 1
             

@@ -5,7 +5,8 @@ log_interval: 10
 device: "cuda"
 epochs_1st: 20
 epochs_2nd: 100
-batch_size: 24
+batch_size: 4
+gradient_accumulation_steps: 8
 max_len: 400
 pretrained_model: "epoch_2nd_00100.pth"
 second_stage_load_pretrained: true

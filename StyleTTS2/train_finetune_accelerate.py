@@ -1,3 +1,7 @@
+import os
+import os.path as osp
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 # load packages
 import random
 import yaml
@@ -79,6 +83,7 @@ def main(config_path):
 
     
     batch_size = config.get('batch_size', 10)
+    accumulation_steps = config.get('gradient_accumulation_steps', 1)
 
     epochs = config.get('epochs', 200)
     save_freq = config.get('save_freq', 2)
@@ -450,15 +455,15 @@ def main(config_path):
             loss_F0_rec =  (F.smooth_l1_loss(F0_real, F0_fake)) / 10
             loss_norm_rec = F.smooth_l1_loss(N_real, N_fake)
 
-            optimizer.zero_grad()
-            d_loss = dl(wav.detach(), y_rec.detach()).mean()
+            d_loss = dl(wav.detach(), y_rec.detach()).mean() / accumulation_steps
             accelerator.backward(d_loss)
-            optimizer.step('msd')
-            optimizer.step('mpd')
+            if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
+                optimizer.step('msd')
+                optimizer.step('mpd')
+                optimizer.zero_grad('msd')
+                optimizer.zero_grad('mpd')
 
             # generator loss
-            optimizer.zero_grad()
-
             loss_mel = stft_loss(y_rec, wav)
             loss_gen_all = gl(wav, y_rec).mean()
             loss_lm = wl(wav.detach().squeeze(), y_rec.squeeze()).mean()
@@ -523,22 +528,37 @@ def main(config_path):
                     f"loss_sty={loss_sty.item() if torch.is_tensor(loss_sty) else float(loss_sty)}, "
                     f"loss_diff={loss_diff.item() if torch.is_tensor(loss_diff) else float(loss_diff)}"
                 )
+            
+            g_loss = g_loss / accumulation_steps
             accelerator.backward(g_loss)
 
-            optimizer.step('bert_encoder')
-            optimizer.step('bert')
-            optimizer.step('predictor')
-            if 'ppim' in optimizer.optimizers:
-                optimizer.step('ppim')
-            optimizer.step('predictor_encoder')
-            optimizer.step('style_encoder')
-            optimizer.step('decoder')
-            
-            optimizer.step('text_encoder')
-            optimizer.step('text_aligner')
-            
-            if epoch >= diff_epoch:
-                optimizer.step('diffusion')
+            if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
+                optimizer.step('bert_encoder')
+                optimizer.step('bert')
+                optimizer.step('predictor')
+                if 'ppim' in optimizer.optimizers:
+                    optimizer.step('ppim')
+                optimizer.step('predictor_encoder')
+                optimizer.step('style_encoder')
+                optimizer.step('decoder')
+                
+                optimizer.step('text_encoder')
+                optimizer.step('text_aligner')
+                
+                if epoch >= diff_epoch:
+                    optimizer.step('diffusion')
+
+                optimizer.zero_grad('bert_encoder')
+                optimizer.zero_grad('bert')
+                optimizer.zero_grad('predictor')
+                if 'ppim' in optimizer.optimizers:
+                    optimizer.zero_grad('ppim')
+                optimizer.zero_grad('predictor_encoder')
+                optimizer.zero_grad('style_encoder')
+                optimizer.zero_grad('decoder')
+                optimizer.zero_grad('text_encoder')
+                optimizer.zero_grad('text_aligner')
+                optimizer.zero_grad('diffusion')
 
             d_loss_slm, loss_gen_lm = 0, 0
             if epoch >= joint_epoch:
@@ -564,50 +584,60 @@ def main(config_path):
                     d_loss_slm, loss_gen_lm, y_pred = slm_out
 
                     # SLM generator loss
-                    optimizer.zero_grad()
+                    loss_gen_lm = loss_gen_lm / accumulation_steps
                     accelerator.backward(loss_gen_lm)
 
-                    # compute the gradient norm
-                    total_norm = {}
-                    for key, module in model_module_items(model):
-                        total_norm[key] = 0
-                        parameters = [p for p in module.parameters() if p.grad is not None and p.requires_grad]
-                        for p in parameters:
-                            param_norm = p.grad.detach().data.norm(2)
-                            total_norm[key] += param_norm.item() ** 2
-                        total_norm[key] = total_norm[key] ** 0.5
+                    if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
+                        # compute the gradient norm
+                        total_norm = {}
+                        for key, module in model_module_items(model):
+                            total_norm[key] = 0
+                            parameters = [p for p in module.parameters() if p.grad is not None and p.requires_grad]
+                            for p in parameters:
+                                param_norm = p.grad.detach().data.norm(2)
+                                total_norm[key] += param_norm.item() ** 2
+                            total_norm[key] = total_norm[key] ** 0.5
 
-                    # gradient scaling
-                    if total_norm['predictor'] > slmadv_params.thresh:
-                        for _, module in model_module_items(model):
-                            for p in module.parameters():
-                                if p.grad is not None:
-                                    p.grad *= (1 / total_norm['predictor'])
+                        # gradient scaling
+                        if total_norm['predictor'] > slmadv_params.thresh:
+                            for _, module in model_module_items(model):
+                                for p in module.parameters():
+                                    if p.grad is not None:
+                                        p.grad *= (1 / total_norm['predictor'])
 
-                    for p in model.predictor.duration_proj.parameters():
-                        if p.grad is not None:
-                            p.grad *= slmadv_params.scale
+                        for p in model.predictor.duration_proj.parameters():
+                            if p.grad is not None:
+                                p.grad *= slmadv_params.scale
 
-                    for p in model.predictor.lstm.parameters():
-                        if p.grad is not None:
-                            p.grad *= slmadv_params.scale
+                        for p in model.predictor.lstm.parameters():
+                            if p.grad is not None:
+                                p.grad *= slmadv_params.scale
 
-                    for p in model.diffusion.parameters():
-                        if p.grad is not None:
-                            p.grad *= slmadv_params.scale
-                    
-                    optimizer.step('bert_encoder')
-                    optimizer.step('bert')
-                    optimizer.step('predictor')
-                    if 'ppim' in optimizer.optimizers:
-                        optimizer.step('ppim')
-                    optimizer.step('diffusion')
+                        for p in model.diffusion.parameters():
+                            if p.grad is not None:
+                                p.grad *= slmadv_params.scale
+                        
+                        optimizer.step('bert_encoder')
+                        optimizer.step('bert')
+                        optimizer.step('predictor')
+                        if 'ppim' in optimizer.optimizers:
+                            optimizer.step('ppim')
+                        optimizer.step('diffusion')
+                        
+                        optimizer.zero_grad('bert_encoder')
+                        optimizer.zero_grad('bert')
+                        optimizer.zero_grad('predictor')
+                        if 'ppim' in optimizer.optimizers:
+                            optimizer.zero_grad('ppim')
+                        optimizer.zero_grad('diffusion')
 
                     # SLM discriminator loss
                     if d_loss_slm != 0:
-                        optimizer.zero_grad()
+                        d_loss_slm = d_loss_slm / accumulation_steps
                         accelerator.backward(d_loss_slm)
-                        optimizer.step('wd')
+                        if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
+                            optimizer.step('wd')
+                            optimizer.zero_grad('wd')
 
             iters = iters + 1
             
