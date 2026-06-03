@@ -971,6 +971,20 @@ def main(config_path):
                     loss_align += (loss_dur).mean()
                     loss_f += (loss_F0).mean()
 
+                    # Save a reference to the last fully-processed batch for evaluation visualization
+                    eval_waves = waves
+                    eval_texts = texts
+                    eval_input_lengths = input_lengths
+                    eval_text_mask = text_mask
+                    eval_mels = mels
+                    eval_mel_input_length = mel_input_length
+                    eval_ref_mels = ref_mels
+                    eval_asr = asr
+                    eval_p = p
+                    eval_d_en = d_en
+                    eval_bert_dur = bert_dur
+                    eval_t_en = t_en
+
                     iters_test += 1
                 except Exception as e:
                     print(f"run into exception", e)
@@ -988,10 +1002,10 @@ def main(config_path):
             # generating reconstruction examples with GT duration
             
             with torch.no_grad():
-                for bib in range(len(asr)):
-                    mel_length = int(mel_input_length[bib].item())
-                    gt = mels[bib, :, :mel_length].unsqueeze(0)
-                    en = asr[bib, :, :mel_length // 2].unsqueeze(0)
+                for bib in range(len(eval_asr)):
+                    mel_length = int(eval_mel_input_length[bib].item())
+                    gt = eval_mels[bib, :, :mel_length].unsqueeze(0)
+                    en = eval_asr[bib, :, :mel_length // 2].unsqueeze(0)
 
                     F0_real, _, _ = model.pitch_extractor(gt.unsqueeze(1))
                     F0_real = F0_real.unsqueeze(0)
@@ -1003,7 +1017,7 @@ def main(config_path):
                     writer.add_audio('eval/y' + str(bib), y_rec.cpu().numpy().squeeze(), epoch, sample_rate=sr)
 
                     s_dur = model.predictor_encoder(gt.unsqueeze(1))
-                    p_en = p[bib, :, :mel_length // 2].unsqueeze(0)
+                    p_en = eval_p[bib, :, :mel_length // 2].unsqueeze(0)
 
                     F0_fake, N_fake = model.predictor.F0Ntrain(p_en, s_dur)
 
@@ -1012,7 +1026,7 @@ def main(config_path):
                     writer.add_audio('pred/y' + str(bib), y_pred.cpu().numpy().squeeze(), epoch, sample_rate=sr)
 
                     if epoch == 0:
-                        writer.add_audio('gt/y' + str(bib), waves[bib].squeeze(), epoch, sample_rate=sr)
+                        writer.add_audio('gt/y' + str(bib), eval_waves[bib].squeeze(), epoch, sample_rate=sr)
 
                     if bib >= 5:
                         break
@@ -1021,28 +1035,28 @@ def main(config_path):
             with torch.no_grad():
                 # compute reference styles
                 if multispeaker and epoch >= diff_epoch:
-                    ref_ss = model.style_encoder(ref_mels.unsqueeze(1))
-                    ref_sp = model.predictor_encoder(ref_mels.unsqueeze(1))
+                    ref_ss = model.style_encoder(eval_ref_mels.unsqueeze(1))
+                    ref_sp = model.predictor_encoder(eval_ref_mels.unsqueeze(1))
                     ref_s = torch.cat([ref_ss, ref_sp], dim=1)
                     
-                for bib in range(len(d_en)):
+                for bib in range(len(eval_d_en)):
                     if multispeaker:
-                        s_pred = sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(texts.device), 
-                              embedding=bert_dur[bib].unsqueeze(0),
+                        s_pred = sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(eval_texts.device), 
+                              embedding=eval_bert_dur[bib].unsqueeze(0),
                               embedding_scale=1,
                                 features=ref_s[bib].unsqueeze(0), # reference from the same speaker as the embedding
                                  num_steps=5).squeeze(1)
                     else:
-                        s_pred = sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(texts.device), 
-                              embedding=bert_dur[bib].unsqueeze(0),
+                        s_pred = sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(eval_texts.device), 
+                              embedding=eval_bert_dur[bib].unsqueeze(0),
                               embedding_scale=1,
                                  num_steps=5).squeeze(1)
 
                     s = s_pred[:, 128:]
                     ref = s_pred[:, :128]
 
-                    d = model.predictor.text_encoder(d_en[bib, :, :input_lengths[bib]].unsqueeze(0), 
-                                                     s, input_lengths[bib, ...].unsqueeze(0), text_mask[bib, :input_lengths[bib]].unsqueeze(0))
+                    d = model.predictor.text_encoder(eval_d_en[bib, :, :eval_input_lengths[bib]].unsqueeze(0), 
+                                                     s, eval_input_lengths[bib, ...].unsqueeze(0), eval_text_mask[bib, :eval_input_lengths[bib]].unsqueeze(0))
 
                     x, _ = model.predictor.lstm(d)
                     duration = model.predictor.duration_proj(x)
@@ -1052,16 +1066,16 @@ def main(config_path):
 
                     pred_dur[-1] += 5
 
-                    pred_aln_trg = torch.zeros(input_lengths[bib], int(pred_dur.sum().data))
+                    pred_aln_trg = torch.zeros(eval_input_lengths[bib], int(pred_dur.sum().data))
                     c_frame = 0
                     for i in range(pred_aln_trg.size(0)):
                         pred_aln_trg[i, c_frame:c_frame + int(pred_dur[i].data)] = 1
                         c_frame += int(pred_dur[i].data)
 
                     # encode prosody
-                    en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(texts.device))
+                    en = (d.transpose(-1, -2) @ pred_aln_trg.unsqueeze(0).to(eval_texts.device))
                     F0_pred, N_pred = model.predictor.F0Ntrain(en, s)
-                    out = model.decoder((t_en[bib, :, :input_lengths[bib]].unsqueeze(0) @ pred_aln_trg.unsqueeze(0).to(texts.device)), 
+                    out = model.decoder((eval_t_en[bib, :, :eval_input_lengths[bib]].unsqueeze(0) @ pred_aln_trg.unsqueeze(0).to(eval_texts.device)), 
                                             F0_pred, N_pred, ref.squeeze().unsqueeze(0))
 
                     writer.add_audio('pred/y' + str(bib), out.cpu().numpy().squeeze(), epoch, sample_rate=sr)
