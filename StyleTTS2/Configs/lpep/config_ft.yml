@@ -3,13 +3,22 @@ save_freq: 5
 log_interval: 10
 device: "cuda"
 epochs: 30
-batch_size: 4
-gradient_accumulation_steps: 8
+batch_size: 6
+gradient_accumulation_steps: 2
 max_len: 400
-pretrained_model: "epoch_2nd_00100.pth"
+pretrained_model: "/workspace/TA/StyleTTS2/Models/lpep/epoch_2nd_00004.pth"
 second_stage_load_pretrained: true
 load_only_params: true
 peft_enabled: true
+peft_trainable_modules:
+  - "text_encoder.embedding"
+  - "predictor"
+  - "decoder"
+  - "style_encoder"
+  - "predictor_encoder"
+  - "msd"
+  - "mpd"
+  - "wd"
 
 F0_path: "Utils/JDC/bst.t7"
 ASR_config: "Utils/ASR/config.yml"
@@ -93,8 +102,8 @@ loss_params:
     lambda_ce: 20.
     lambda_sty: 1.
     lambda_diff: 1.
-    diff_epoch: 5
-    joint_epoch: 10
+    diff_epoch: 3
+    joint_epoch: 5
 
 optimizer_params:
   lr: 0.0001

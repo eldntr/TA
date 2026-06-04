@@ -245,6 +245,9 @@ def main(config_path):
             unfreeze_ppim(model)
         print_trainable_params(model)
         
+    is_msd_trainable = any(p.requires_grad for p in model.msd.parameters())
+    is_wd_trainable = any(p.requires_grad for p in model.wd.parameters())
+        
     n_down = model.text_aligner.n_down
 
     best_loss = float('inf')  # best test loss
@@ -460,7 +463,7 @@ def main(config_path):
             loss_F0_rec =  (F.smooth_l1_loss(F0_real, F0_fake)) / 10
             loss_norm_rec = F.smooth_l1_loss(N_real, N_fake)
 
-            if not peft_enabled:
+            if not peft_enabled or is_msd_trainable:
                 d_loss = dl(wav.detach(), y_rec.detach()).mean() / accumulation_steps
                 d_loss.backward()
                 if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
@@ -640,7 +643,7 @@ def main(config_path):
                         optimizer.zero_grad('diffusion')
 
                     # SLM discriminator loss
-                    if d_loss_slm != 0 and not peft_enabled:
+                    if d_loss_slm != 0 and (not peft_enabled or is_wd_trainable):
                         d_loss_slm = d_loss_slm / accumulation_steps
                         d_loss_slm.backward(retain_graph=True)
                         if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
